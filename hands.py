@@ -14,12 +14,20 @@ from load import LoadButton
 from volumeSlider import VolumeSlider, clamp, is_claw
 from stempads import StemPadBank
 from recorder import DJRecorder, RecordButton
+from bpm_display_only import BeatMatcher, BPMDisplay
+from beat_grid import BeatGridManager
 
 # -----------------------------
-# Load Music
+# Initialize Beat Matcher FIRST (must exist before load_music_folder)
 # -----------------------------
-MUSIC_FOLDER = "MP3"
-mc.load_music_folder(MUSIC_FOLDER)
+beat_matcher = BeatMatcher()
+mc.beat_matcher = beat_matcher
+print(f"🎵 Beat matcher initialized")
+
+beat_grid_manager = BeatGridManager()
+mc.beat_grid_manager = beat_grid_manager
+print(f"🎼 Beat grid manager initialized")
+print()
 
 # -----------------------------
 # Initialize Recorder
@@ -33,6 +41,12 @@ print()
 
 # Set recorder in music module so it can capture audio
 mc.audio_recorder = recorder
+
+# -----------------------------
+# Load Music (beat_matcher must already be set above)
+# -----------------------------
+MUSIC_FOLDER = "MP3"
+mc.load_music_folder(MUSIC_FOLDER)
 
 # -----------------------------
 # Deck Initialization
@@ -101,6 +115,8 @@ left_jog = right_jog = None
 left_volume = right_volume = None
 left_stem_bank = right_stem_bank = None
 record_button = None
+left_bpm_display = right_bpm_display = None
+beat_grid_manager_ui = None  # alias for drawing
 visualizer = None
 pinching_previous = set()
 
@@ -117,8 +133,10 @@ while cam.isOpened():
 
     # Initialize song list
     if song_list_panel is None:
-        song_list_y = h - item_height * len(song_names) - 120
-        song_list_panel = songlist.SongList(song_names, position=(10, song_list_y), width=song_list_width, item_height=item_height)
+        # Center horizontally under the record button (record button is at center_x, y=60)
+        song_list_x = w // 2 - song_list_width // 2
+        song_list_y = 100  # just below the record button
+        song_list_panel = songlist.SongList(song_names, position=(song_list_x, song_list_y), width=song_list_width, item_height=item_height)
 
     # Initialize UI elements
     if left_button is None:
@@ -135,6 +153,11 @@ while cam.isOpened():
         jog_y = int(h*0.55)
         left_jog = JogWheel(center=(center_x-350, jog_y), radius=160)
         right_jog = JogWheel(center=(center_x+350, jog_y), radius=160)
+        
+        # BPM displays - above jog wheels
+        # BPM displays - below jog wheels (time text is at radius+50, BPM sits at radius+75)
+        left_bpm_display = BPMDisplay(position=(center_x-350-40, jog_y+160+75))
+        right_bpm_display = BPMDisplay(position=(center_x+350-40, jog_y+160+75))
 
         slider_width = 30
         slider_height = 200
@@ -143,7 +166,7 @@ while cam.isOpened():
         right_volume = VolumeSlider(x=right_jog.cx + slider_offset, y=right_jog.cy - slider_height//2, width=slider_width, height=slider_height, track_index=1)
 
         # Initialize stem pad banks (below play button)
-        stem_pad_y = button_y + 50  # 50 pixels below play button
+        stem_pad_y = button_y + 50
         left_stem_bank = StemPadBank(
             position=(center_x - 200, stem_pad_y),
             track_index=0,
@@ -242,8 +265,13 @@ while cam.isOpened():
     # -----------------------------
     left_active = left_song_index>=0 and any(left_button.contains(x,y) for x,y in pinch_positions)
     right_active = right_song_index>=0 and any(right_button.contains(x,y) for x,y in pinch_positions)
-    if left_active and left_button.center not in pinching_previous: mc.toggle_play(left_song_index)
-    if right_active and right_button.center not in pinching_previous: mc.toggle_play(right_song_index)
+    
+    if left_active and left_button.center not in pinching_previous: 
+        mc.toggle_play(left_song_index)
+    
+    if right_active and right_button.center not in pinching_previous: 
+        mc.toggle_play(right_song_index)
+    
     pinching_previous = set()
     if left_active: pinching_previous.add(left_button.center)
     if right_active: pinching_previous.add(right_button.center)
@@ -251,20 +279,16 @@ while cam.isOpened():
     # -----------------------------
     # Stem Pads Control
     # -----------------------------
-    # Always draw stem pads, but only make them functional if stems are loaded
     if left_song_index >= 0:
         if mc.has_stems(left_song_index):
-            # Get current stem states
             left_stem_states = {
                 stem: mc.get_stem_state(left_song_index, stem)
                 for stem in mc.get_available_stems(left_song_index)
             }
-            # Update and check for pinches
             pinched_stems = left_stem_bank.update(pinch_positions, left_stem_states)
             for stem_type in pinched_stems:
                 mc.toggle_stem(left_song_index, stem_type)
         else:
-            # No stems loaded - just draw inactive pads
             empty_stem_states = {'drums': False, 'vocals': False, 'instrumental': False}
             left_stem_bank.update([], empty_stem_states)
         
@@ -280,7 +304,6 @@ while cam.isOpened():
             for stem_type in pinched_stems:
                 mc.toggle_stem(right_song_index, stem_type)
         else:
-            # No stems loaded - just draw inactive pads
             empty_stem_states = {'drums': False, 'vocals': False, 'instrumental': False}
             right_stem_bank.update([], empty_stem_states)
         
@@ -300,7 +323,7 @@ while cam.isOpened():
     if not left_pinching_jog: left_jog.check_release()
     if not right_pinching_jog: right_jog.check_release()
 
-    # Spin visuals - spin if THIS deck is playing (not just active)
+    # Spin visuals
     if left_song_index>=0 and mc.is_playing(left_song_index):
         left_jog.angle += 0.05
     if right_song_index>=0 and mc.is_playing(right_song_index):
@@ -314,7 +337,6 @@ while cam.isOpened():
     if detection_result.hand_landmarks and detection_result.handedness:
         for hand_info, hand_landmarks in zip(detection_result.handedness, detection_result.hand_landmarks):
             label = hand_info[0].category_name
-            # Swap left/right because the frame is mirrored
             if label == "Left":
                 right_volume.update(hand_landmarks, w, h)
                 if right_song_index >= 0:
@@ -330,30 +352,22 @@ while cam.isOpened():
     # -----------------------------
     # Recording Controls
     # -----------------------------
-    # Update record button
     record_duration = recorder.get_recording_duration()
     record_newly_pinched = record_button.update(pinch_positions, recorder.is_recording)
     
     if record_newly_pinched:
         if not recorder.is_recording:
-            # Start recording
             if recorder.start_recording(w, h):
                 print(f"🔴 Recording session started")
         else:
-            # Stop recording
             output_file = recorder.stop_recording()
             if output_file:
                 print(f"✅ Session saved: {output_file}")
     
-    # Draw record button
     record_button.draw(frame, duration=record_duration)
     
-    # Add current frame to recording
     if recorder.is_recording:
         recorder.add_video_frame(frame.copy())
-        
-        # Add audio to recording (we'll need to capture this from the mixer)
-        # This is handled in the mixer callback below
 
     # -----------------------------
     # Display Time & Colors
@@ -361,7 +375,6 @@ while cam.isOpened():
     left_time = mc.get_position(left_song_index) if left_song_index>=0 else 0
     right_time = mc.get_position(right_song_index) if right_song_index>=0 else 0
     
-    # Color based on whether THIS deck is playing
     left_color = (0,255,255) if mc.is_playing(left_song_index) else (100,100,100)
     right_color = (0,255,255) if mc.is_playing(right_song_index) else (100,100,100)
     
@@ -370,7 +383,44 @@ while cam.isOpened():
     cv.putText(frame, format_time(left_time), left_time_pos, cv.FONT_HERSHEY_SIMPLEX, 0.6, left_color, 2)
     cv.putText(frame, format_time(right_time), right_time_pos, cv.FONT_HERSHEY_SIMPLEX, 0.6, right_color, 2)
     
-    # Display now playing for both decks if both are active
+    # Draw BPM displays - always draw when a song is loaded (shows "--- BPM" while analyzing)
+    if left_song_index >= 0:
+        left_bpm = mc.get_bpm(left_song_index)
+        left_bpm_display.draw(frame, left_bpm)
+    
+    if right_song_index >= 0:
+        right_bpm = mc.get_bpm(right_song_index)
+        right_bpm_display.draw(frame, right_bpm)
+
+    # -----------------------------
+    # Beat Grid Strips + Phase Ring
+    # -----------------------------
+    strip_y = left_jog.cy - left_jog.radius - 80  # just above each jog wheel
+    if left_song_index >= 0:
+        beat_grid_manager.draw_strip(
+            frame, left_song_index,
+            mc.get_position(left_song_index),
+            cx=left_jog.cx, y=strip_y,
+            is_playing=mc.is_playing(left_song_index)
+        )
+    if right_song_index >= 0:
+        beat_grid_manager.draw_strip(
+            frame, right_song_index,
+            mc.get_position(right_song_index),
+            cx=right_jog.cx, y=strip_y,
+            is_playing=mc.is_playing(right_song_index)
+        )
+    # Phase alignment ring — only when both decks have songs loaded
+    if left_song_index >= 0 and right_song_index >= 0:
+        ring_cx = w // 2
+        ring_cy = strip_y + 25  # vertically centred in the strip
+        beat_grid_manager.draw_phase_ring(
+            frame, ring_cx, ring_cy,
+            left_song_index,  mc.get_position(left_song_index),
+            right_song_index, mc.get_position(right_song_index)
+        )
+    
+    # Display now playing for both decks
     now_playing_text = []
     if left_song_index >= 0 and mc.is_playing(left_song_index):
         now_playing_text.append(f"LEFT: {mc.get_current_song_name(left_song_index)}")
@@ -395,13 +445,13 @@ while cam.isOpened():
             cv.putText(frame, f"RIGHT STEMS: {', '.join(active_stems)}", (10, stem_status_y), 
                       cv.FONT_HERSHEY_SIMPLEX, 0.5, (100,200,255), 1)
 
-    # Visualizer - pass track indices so it can check if they're playing
+    # Visualizer
     left_playing = left_song_index>=0 and mc.is_playing(left_song_index)
     right_playing = right_song_index>=0 and mc.is_playing(right_song_index)
     visualizer.draw_all(frame, left_playing, right_playing, left_song_index, right_song_index)
 
     # Show Frame
-    cv.imshow("AirBenders", frame)
+    cv.imshow("Show Video", frame)
     if cv.waitKey(20) & 0xFF == ord('q'): break
 
 cam.release()
