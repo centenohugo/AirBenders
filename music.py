@@ -49,6 +49,13 @@ stem_manager = None
 # Recorder reference (will be set by hands.py)
 audio_recorder = None
 
+# Beat matcher reference (will be set by hands.py BEFORE load_music_folder is called)
+beat_matcher = None
+
+# Beat grid manager reference (will be set by hands.py BEFORE load_music_folder is called)
+beat_grid_manager = None
+
+
 class TrackState:
     def __init__(self, filepath, target_sample_rate=44100, target_channels=2):
         self.filepath = filepath
@@ -81,14 +88,15 @@ class TrackState:
         self.is_playing = False
         self.was_playing_before_scrub = False
         self.volume = 1.0
+        self.playback_rate = 1.0
         self.stream = None
         self.duration = len(self.audio_data) / self.sample_rate
         self.playback_position = 0
         self.lock = threading.Lock()
         
         # Stem state
-        self.stems = {}  # stem_type -> audio_data
-        self.stem_enabled = {}  # stem_type -> bool
+        self.stems = {}          # stem_type -> audio_data
+        self.stem_enabled = {}   # stem_type -> bool
         self.has_stems = False
         
         print(f"  Duration: {self.duration:.2f}s, Sample rate: {self.sample_rate}Hz, Channels: {self.audio_data.shape[1]}")
@@ -147,6 +155,7 @@ class TrackState:
                     mixed += chunk
         
         return mixed
+
 
 track_states = {}
 mixer_streams = []
@@ -213,13 +222,13 @@ class AudioMixer:
             for index, state in track_states.items():
                 if state.is_playing and not state.is_scrubbing:
                     start_frame = state.playback_position
-                    
-                    # Get mixed audio (with stems if enabled)
-                    chunk = state.get_mixed_audio(start_frame, frames)
+                    frames_to_read = frames
+
+                    chunk = state.get_mixed_audio(start_frame, frames_to_read)
                     
                     if len(chunk) > 0:
                         outdata[:len(chunk)] += chunk * state.volume
-                        state.playback_position += len(chunk)
+                        state.playback_position += frames_to_read
                         
                         if state.playback_position >= len(state.audio_data):
                             state.is_playing = False
@@ -282,6 +291,7 @@ class AudioMixer:
             if audio_recorder is not None:
                 audio_recorder.add_audio_chunk(outdata, self.sample_rate)
 
+
 mixer = None
 output_stream = None
 
@@ -319,19 +329,56 @@ def load_music_folder(folder_path):
             print(f"Loading {os.path.basename(song_path)}...")
             track_states[i] = TrackState(song_path, TARGET_SAMPLE_RATE, TARGET_CHANNELS)
             
+            # -------------------------------------------------------
+            # Analyze BPM + beat grid in background threads.
+            # beat_matcher and beat_grid_manager are set by hands.py
+            # BEFORE this function is called.
+            # -------------------------------------------------------
+            global beat_matcher, beat_grid_manager
+            track_idx  = i
+            audio_copy = track_states[i].audio_data.copy()
+            sr         = TARGET_SAMPLE_RATE
+
+            if beat_matcher is not None:
+                bm = beat_matcher
+                def _analyze_bpm(ti=track_idx, ad=audio_copy, rate=sr, bm=bm):
+                    try:
+                        bm.analyze_track(ti, ad, rate)
+                    except Exception as e:
+                        print(f"    \u26a0\ufe0f  BPM analysis failed for track {ti}: {e}")
+                        with bm.lock:
+                            bm.track_bpms[ti] = 120.0
+                threading.Thread(target=_analyze_bpm, daemon=True).start()
+            else:
+                print(f"    \u26a0\ufe0f  beat_matcher not set — BPM will not be displayed for track {i}")
+
+            if beat_grid_manager is not None:
+                bgm = beat_grid_manager
+                def _analyze_grid(ti=track_idx, ad=audio_copy, rate=sr, bgm=bgm):
+                    try:
+                        bgm.analyze(ti, ad, rate)
+                    except Exception as e:
+                        print(f"    \u26a0\ufe0f  Beat grid analysis failed for track {ti}: {e}")
+                threading.Thread(target=_analyze_grid, daemon=True).start()
+            
             # Load stems if available
             song_stem = Path(song_path).stem
             stem_files = {
-                'vocals': folder_path / f"{song_stem}_vocals.mp3",
+                'vocals':       folder_path / f"{song_stem}_vocals.mp3",
                 'instrumental': folder_path / f"{song_stem}_instrumental.mp3",
-                'drums': folder_path / f"{song_stem}_drums.mp3",
-                'bass': folder_path / f"{song_stem}_bass.mp3",
-                'other': folder_path / f"{song_stem}_other.mp3"
+                'drums':        folder_path / f"{song_stem}_drums.mp3",
+                'bass':         folder_path / f"{song_stem}_bass.mp3",
+                'other':        folder_path / f"{song_stem}_other.mp3"
             }
             
+            stems_found = 0
             for stem_type, stem_path in stem_files.items():
                 if stem_path.exists():
                     track_states[i].load_stem(stem_type, str(stem_path), TARGET_SAMPLE_RATE, TARGET_CHANNELS)
+                    stems_found += 1
+
+            if stems_found == 0:
+                print(f"    ℹ️  No stem files found for {os.path.basename(song_path)}")
                     
         except Exception as e:
             print(f"Error loading {song_path}: {e}")
@@ -362,11 +409,9 @@ def toggle_stem(index, stem_type):
     """Toggle a stem on/off"""
     if index < 0 or index >= len(songs):
         return False
-    
     state = track_states[index]
     if stem_type not in state.stems:
         return False
-    
     state.stem_enabled[stem_type] = not state.stem_enabled[stem_type]
     return state.stem_enabled[stem_type]
 
@@ -374,27 +419,22 @@ def get_stem_state(index, stem_type):
     """Check if a stem is enabled"""
     if index < 0 or index >= len(songs):
         return False
-    
-    state = track_states[index]
-    return state.stem_enabled.get(stem_type, False)
+    return track_states[index].stem_enabled.get(stem_type, False)
 
 def get_available_stems(index):
     """Get list of available stems for a track"""
     if index < 0 or index >= len(songs):
         return []
-    
-    state = track_states[index]
-    return list(state.stems.keys())
+    return list(track_states[index].stems.keys())
 
 def has_stems(index):
     """Check if track has any stems loaded"""
     if index < 0 or index >= len(songs):
         return False
-    
     return track_states[index].has_stems
 
 # -----------------------------
-# Existing Functions (unchanged)
+# Playback Functions
 # -----------------------------
 def update_active_track_position():
     now = time.time()
@@ -403,11 +443,9 @@ def update_active_track_position():
             if state.last_update_time is not None:
                 elapsed = now - state.last_update_time
                 state.position += elapsed
-                
                 if state.position >= state.duration:
                     state.position = state.duration
                     state.is_playing = False
-                    
             state.last_update_time = now
 
 def set_volume(index, volume):
@@ -437,7 +475,6 @@ def toggle_play(index):
         if state.is_playing:
             state.is_playing = False
             state.last_update_time = None
-            
             if active_track == index:
                 active_track = -1
                 for i, s in track_states.items():
@@ -450,7 +487,6 @@ def toggle_play(index):
                 state.playback_position = 0
             else:
                 state.playback_position = int(state.position * state.sample_rate)
-                
             state.is_playing = True
             state.last_update_time = time.time()
             active_track = index
@@ -464,7 +500,6 @@ def stop(index):
             state.last_update_time = None
             state.position = 0.0
             state.playback_position = 0
-            
             if active_track == index:
                 active_track = -1
                 for i, s in track_states.items():
@@ -498,11 +533,9 @@ def play_scratch_effect(delta, track_index):
     with scratch_lock:
         scratch_speed = delta
         scratch_direction = 1 if delta >= 0 else -1
-        
         if not scratch_is_playing:
             scratch_is_playing = True
             scratch_playback_position = 0
-            
             if use_track_scratch and track_index >= 0:
                 prepare_track_scratch_buffer(track_index)
 
@@ -526,7 +559,6 @@ def scrub(delta, index):
     if not state.is_scrubbing:
         state.is_scrubbing = True
         state.was_playing_before_scrub = state.is_playing
-        
         with mixer.lock:
             state.is_playing = False
 
@@ -534,7 +566,6 @@ def scrub(delta, index):
     state.position = max(0, min(state.position, state.duration))
     state.playback_position = int(state.position * state.sample_rate)
     state.last_update_time = time.time()
-    
     play_scratch_effect(delta, index)
 
 def end_scrub(index):
@@ -547,13 +578,11 @@ def end_scrub(index):
     if state.is_scrubbing:
         state.is_scrubbing = False
         stop_scratch_effect()
-        
         if state.was_playing_before_scrub:
             with mixer.lock:
                 state.is_playing = True
                 state.last_update_time = time.time()
                 active_track = index
-        
         state.was_playing_before_scrub = False
 
 def is_playing(index=None):
@@ -570,3 +599,24 @@ def get_current_song_name(index):
 
 def get_active_track():
     return active_track
+
+# -----------------------------
+# Beat Matching / BPM Functions
+# -----------------------------
+def set_playback_rate(index, rate):
+    if index < 0 or index >= len(songs):
+        return
+    rate = max(0.8, min(1.2, rate))
+    track_states[index].playback_rate = rate
+
+def get_playback_rate(index):
+    if index < 0 or index >= len(songs):
+        return 1.0
+    return track_states[index].playback_rate
+
+def get_bpm(index):
+    """Get BPM for a track. Returns 0.0 if not yet analyzed."""
+    global beat_matcher
+    if beat_matcher is None or index < 0 or index >= len(songs):
+        return 0.0
+    return beat_matcher.get_bpm(index)

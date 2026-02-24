@@ -38,20 +38,13 @@ class StemPad:
     
     def update(self, pinch_positions, is_enabled):
         """
-        Update button state
-        
-        Args:
-            pinch_positions: List of (x, y) pinch positions
-            is_enabled: Current stem enabled state from music module
+        Update button state.
+        Returns True on a new pinch (edge trigger only).
         """
         self.is_enabled = is_enabled
         
-        # Check if being pinched
         is_pinching_now = any(self.contains(px, py) for px, py in pinch_positions)
-        
-        # Detect new pinch (edge trigger)
         newly_pinched = is_pinching_now and not self.was_pinching
-        
         self.was_pinching = is_pinching_now
         
         return newly_pinched
@@ -60,36 +53,25 @@ class StemPad:
         """Draw the stem pad button"""
         x1, y1, x2, y2 = self.get_bounds()
         
-        # Choose color based on state
         color = self.color_active if self.is_enabled else self.color_inactive
-        
-        # Draw filled rectangle
         cv.rectangle(frame, (x1, y1), (x2, y2), color, cv.FILLED)
         
-        # Draw border
         border_color = (0, 255, 0) if self.is_enabled else self.color_border
         cv.rectangle(frame, (x1, y1), (x2, y2), border_color, 2)
         
-        # Draw label text
         text_size = cv.getTextSize(self.label, cv.FONT_HERSHEY_SIMPLEX, 0.35, 1)[0]
         text_x = self.cx - text_size[0] // 2
         text_y = self.cy + text_size[1] // 2
-        
         cv.putText(frame, self.label, (text_x, text_y),
                    cv.FONT_HERSHEY_SIMPLEX, 0.35, self.color_text, 1)
 
 
 class StemPadBank:
     """
-    Bank of stem pads that DYNAMICALLY shows all available stems
+    Bank of stem pads that DYNAMICALLY shows all available stems.
+    Pads are recreated automatically if the stem set changes.
     """
     def __init__(self, position, track_index, deck_label="DECK"):
-        """
-        Args:
-            position: (x, y) center position for the bank
-            track_index: Which track this bank controls
-            deck_label: Label for this deck (e.g., "LEFT" or "RIGHT")
-        """
         self.x, self.y = position
         self.track_index = track_index
         self.deck_label = deck_label
@@ -99,25 +81,24 @@ class StemPadBank:
         self.button_height = 30
         self.spacing = 8
         
-        # Pads will be created dynamically based on available stems
+        # Pads created dynamically based on available stems
         self.pads = []
         self.current_stems = []
         
-        # Stem type to label mapping
+        # Stem type to display label mapping
         self.stem_labels = {
-            'drums': 'DRM',
-            'vocals': 'VOX',
-            'bass': 'BAS',
-            'other': 'OTH',
+            'drums':        'DRM',
+            'vocals':       'VOX',
+            'bass':         'BAS',
+            'other':        'OTH',
             'instrumental': 'INST'
         }
     
     def _create_pads(self, available_stems):
         """Create pads based on available stems"""
-        # Sort stems in a logical order
         stem_order = ['drums', 'bass', 'vocals', 'other', 'instrumental']
         sorted_stems = [s for s in stem_order if s in available_stems]
-        # Add any stems not in the predefined order
+        # Append any stems not in predefined order
         for s in available_stems:
             if s not in sorted_stems:
                 sorted_stems.append(s)
@@ -128,7 +109,7 @@ class StemPadBank:
         if num_stems == 0:
             return
         
-        # Calculate positions (horizontal layout)
+        # Horizontal layout centred on self.x
         total_width = num_stems * self.button_width + (num_stems - 1) * self.spacing
         start_x = self.x - total_width // 2 + self.button_width // 2
         
@@ -150,27 +131,23 @@ class StemPadBank:
     
     def update(self, pinch_positions, stem_states):
         """
-        Update all pads in the bank
-        
+        Update all pads in the bank.
+
         Args:
             pinch_positions: List of (x, y) pinch positions
             stem_states: Dict of {stem_type: enabled} from music module
-            
+
         Returns:
-            List of stem_types that were just pinched
+            List of stem_types that were newly pinched this frame
         """
-        # Check if we need to recreate pads (stems changed)
         available_stems = list(stem_states.keys())
         if set(available_stems) != set(self.current_stems):
             self._create_pads(available_stems)
         
         events = []
-        
         for pad in self.pads:
             is_enabled = stem_states.get(pad.stem_type, False)
-            newly_pinched = pad.update(pinch_positions, is_enabled)
-            
-            if newly_pinched:
+            if pad.update(pinch_positions, is_enabled):
                 events.append(pad.stem_type)
         
         return events
@@ -178,14 +155,15 @@ class StemPadBank:
     def draw(self, frame):
         """Draw all pads in the bank"""
         if not self.pads:
+            cv.putText(frame, f"{self.deck_label}: No stems",
+                       (self.x - 60, self.y),
+                       cv.FONT_HERSHEY_SIMPLEX, 0.4, (150, 150, 150), 1)
             return
         
-        # Draw label above pads
-        label_y = self.y - 22
-        label_text = f"{self.deck_label} STEMS ({len(self.pads)})"
-        cv.putText(frame, label_text, (self.x - 50, label_y),
+        # Label above pads
+        cv.putText(frame, f"{self.deck_label} STEMS",
+                   (self.x - 50, self.y - 22),
                    cv.FONT_HERSHEY_SIMPLEX, 0.4, (200, 200, 200), 1)
         
-        # Draw all pads
         for pad in self.pads:
             pad.draw(frame)
