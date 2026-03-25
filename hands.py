@@ -3,7 +3,7 @@ import cv2 as cv
 import mediapipe as mp
 from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
-from visualizer import DJVisualizer
+# from visualizer import DJVisualizer
 import math
 from playbutton import PlayButton
 from jogwheel import JogWheel
@@ -117,7 +117,7 @@ left_stem_bank = right_stem_bank = None
 record_button = None
 left_bpm_display = right_bpm_display = None
 beat_grid_manager_ui = None  # alias for drawing
-visualizer = None
+# visualizer = None
 pinching_previous = set()
 
 # -----------------------------
@@ -133,9 +133,8 @@ while cam.isOpened():
 
     # Initialize song list
     if song_list_panel is None:
-        # Center horizontally under the record button (record button is at center_x, y=60)
         song_list_x = w // 2 - song_list_width // 2
-        song_list_y = 100  # just below the record button
+        song_list_y = 100
         song_list_panel = songlist.SongList(song_names, position=(song_list_x, song_list_y), width=song_list_width, item_height=item_height)
 
     # Initialize UI elements
@@ -154,7 +153,6 @@ while cam.isOpened():
         left_jog = JogWheel(center=(center_x-350, jog_y), radius=160)
         right_jog = JogWheel(center=(center_x+350, jog_y), radius=160)
         
-        # BPM displays - above jog wheels
         # BPM displays - below jog wheels (time text is at radius+50, BPM sits at radius+75)
         left_bpm_display = BPMDisplay(position=(center_x-350-40, jog_y+160+75))
         right_bpm_display = BPMDisplay(position=(center_x+350-40, jog_y+160+75))
@@ -178,8 +176,8 @@ while cam.isOpened():
             deck_label="RIGHT"
         )
 
-    if visualizer is None:
-        visualizer = DJVisualizer(w, h)
+    # if visualizer is None:
+    #     visualizer = DJVisualizer(w, h)
 
     # -----------------------------
     # Hand Detection
@@ -205,47 +203,38 @@ while cam.isOpened():
     # -----------------------------
     song_list_panel.update(pinch_positions)
     
-    # Track song selection with proper pinch state
     song_pinched_this_frame = False
     if not song_list_panel.is_collapsed and not song_list_panel.is_dragging:
         idx = song_list_panel.check_pinch(pinch_positions)
         if idx is not None:
             song_pinched_this_frame = True
-            # Toggle highlight only on new pinch (not held)
             if song_pinch_id != idx:
                 highlighted_index = None if highlighted_index == idx else idx
                 song_pinch_id = idx
     
-    # Reset pinch tracking when no pinch detected
     if not song_pinched_this_frame:
         song_pinch_id = None
 
-    # Draw the song list
     song_list_panel.draw(frame, highlight_index=highlighted_index)
 
     # -----------------------------
     # Load Buttons Logic
     # -----------------------------
     left_load_active = right_load_active = False
-    # Only allow loading when panel is expanded and not dragging
     if not song_list_panel.is_collapsed and not song_list_panel.is_dragging:
         for px, py in pinch_positions:
             if highlighted_index is not None:
                 if left_load_button.contains(px, py):
-                    # Stop current song if playing
                     if left_song_index >= 0:
                         mc.stop(left_song_index)
                     left_song_index = highlighted_index
-                    # Reset new song to position 0
                     mc.stop(left_song_index)
                     highlighted_index = None
                     left_load_active = True
                 if right_load_button.contains(px, py):
-                    # Stop current song if playing
                     if right_song_index >= 0:
                         mc.stop(right_song_index)
                     right_song_index = highlighted_index
-                    # Reset new song to position 0
                     mc.stop(right_song_index)
                     highlighted_index = None
                     right_load_active = True
@@ -350,26 +339,6 @@ while cam.isOpened():
     right_volume.draw(frame)
 
     # -----------------------------
-    # Recording Controls
-    # -----------------------------
-    record_duration = recorder.get_recording_duration()
-    record_newly_pinched = record_button.update(pinch_positions, recorder.is_recording)
-    
-    if record_newly_pinched:
-        if not recorder.is_recording:
-            if recorder.start_recording(w, h):
-                print(f"🔴 Recording session started")
-        else:
-            output_file = recorder.stop_recording()
-            if output_file:
-                print(f"✅ Session saved: {output_file}")
-    
-    record_button.draw(frame, duration=record_duration)
-    
-    if recorder.is_recording:
-        recorder.add_video_frame(frame.copy())
-
-    # -----------------------------
     # Display Time & Colors
     # -----------------------------
     left_time = mc.get_position(left_song_index) if left_song_index>=0 else 0
@@ -394,8 +363,9 @@ while cam.isOpened():
 
     # -----------------------------
     # Beat Grid Strips + Phase Ring
+    # drawn here so they are baked into the frame before the recorder captures it
     # -----------------------------
-    strip_y = left_jog.cy - left_jog.radius - 80  # just above each jog wheel
+    strip_y = left_jog.cy - left_jog.radius - 80
     if left_song_index >= 0:
         beat_grid_manager.draw_strip(
             frame, left_song_index,
@@ -410,16 +380,15 @@ while cam.isOpened():
             cx=right_jog.cx, y=strip_y,
             is_playing=mc.is_playing(right_song_index)
         )
-    # Phase alignment ring — only when both decks have songs loaded
     if left_song_index >= 0 and right_song_index >= 0:
         ring_cx = w // 2
-        ring_cy = strip_y + 25  # vertically centred in the strip
+        ring_cy = strip_y + 25
         beat_grid_manager.draw_phase_ring(
             frame, ring_cx, ring_cy,
             left_song_index,  mc.get_position(left_song_index),
             right_song_index, mc.get_position(right_song_index)
         )
-    
+
     # Display now playing for both decks
     now_playing_text = []
     if left_song_index >= 0 and mc.is_playing(left_song_index):
@@ -445,10 +414,34 @@ while cam.isOpened():
             cv.putText(frame, f"RIGHT STEMS: {', '.join(active_stems)}", (10, stem_status_y), 
                       cv.FONT_HERSHEY_SIMPLEX, 0.5, (100,200,255), 1)
 
-    # Visualizer
-    left_playing = left_song_index>=0 and mc.is_playing(left_song_index)
-    right_playing = right_song_index>=0 and mc.is_playing(right_song_index)
-    visualizer.draw_all(frame, left_playing, right_playing, left_song_index, right_song_index)
+    # -----------------------------
+    # Visualizer (commented out)
+    # -----------------------------
+    # left_playing = left_song_index>=0 and mc.is_playing(left_song_index)
+    # right_playing = right_song_index>=0 and mc.is_playing(right_song_index)
+    # visualizer.draw_all(frame, left_playing, right_playing, left_song_index, right_song_index)
+
+    # -----------------------------
+    # Recording Controls
+    # capture LAST — everything above is already drawn onto the frame
+    # -----------------------------
+    record_duration = recorder.get_recording_duration()
+    record_newly_pinched = record_button.update(pinch_positions, recorder.is_recording)
+    
+    if record_newly_pinched:
+        if not recorder.is_recording:
+            if recorder.start_recording(w, h):
+                print(f"🔴 Recording session started")
+        else:
+            output_file = recorder.stop_recording()
+            if output_file:
+                print(f"✅ Session saved: {output_file}")
+    
+    record_button.draw(frame, duration=record_duration)
+
+    # Add frame to recorder LAST — all UI elements including beat grid are drawn by this point
+    if recorder.is_recording:
+        recorder.add_video_frame(frame.copy())
 
     # Show Frame
     cv.imshow("Show Video", frame)
