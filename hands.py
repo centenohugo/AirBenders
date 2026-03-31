@@ -1,4 +1,5 @@
 import os
+import ctypes
 import cv2 as cv
 import mediapipe as mp
 from mediapipe.tasks import python
@@ -123,12 +124,19 @@ pinching_previous = set()
 # -----------------------------
 # Main Loop
 # -----------------------------
+_user32 = ctypes.windll.user32
+SCREEN_W = _user32.GetSystemMetrics(0)
+SCREEN_H = _user32.GetSystemMetrics(1)
+
+cv.namedWindow("Show Video", cv.WINDOW_NORMAL)
+cv.setWindowProperty("Show Video", cv.WND_PROP_FULLSCREEN, cv.WINDOW_FULLSCREEN)
 while cam.isOpened():
     success, frame = cam.read()
     if not success: continue
 
     mc.update_active_track_position()
     frame = cv.flip(frame, 1)
+    frame = cv.resize(frame, (SCREEN_W, SCREEN_H))
     h, w, _ = frame.shape
 
     # Initialize song list
