@@ -40,6 +40,7 @@ class BeatGrid:
         self.duration    = 0.0
         self.sample_rate = 44100
         self.lock        = threading.Lock()
+        self.deck        = -1      # 0=left, 1=right, -1=unassigned
 
 
 class BeatGridManager:
@@ -62,6 +63,10 @@ class BeatGridManager:
         self.grids        = {}          # track_index -> BeatGrid
         self.cache_folder = Path(cache_folder)
         self.cache_folder.mkdir(exist_ok=True)
+        self.track_decks  = {}          # track_index -> deck (0=left, 1=right)
+
+    def set_track_deck(self, track_index, deck):
+        self.track_decks[track_index] = deck
 
     # ── analysis ──────────────────────────────────────────────────────────────
 
@@ -142,21 +147,34 @@ class BeatGridManager:
     OTHER_BEAT_COLOR     = (0, 50,  220)   # red    — other deck beat markers
 
     def draw_strip(self, frame, track_index, position_sec,
-                   cx, y, is_playing,
+                   cx, y, is_playing, deck,
                    other_track_index=None, other_position_sec=None):
         """
-        Draw a waveform strip with beat markers centred at (cx, y).
+        Draw a waveform strip with stacked beat markers centred at (cx, y).
         cx   = horizontal centre (align with jog wheel centre)
         y    = top of the strip
+        deck = 0 for left deck, 1 for right deck
 
-        If other_track_index and other_position_sec are provided, the other
-        deck's waveform and beat markers are drawn overlaid in orange/red —
-        exactly like the CDJ-3000 Stacked Waveform feature.  When both
-        waveforms align at the playhead, the beats are in sync.
+        Stacked layout:
+          - Top half: OTHER deck waveform + beat markers
+          - Bottom half: MAIN deck waveform + beat markers
+        
+        Colors are based on which deck the song belongs to:
+          - Left deck song = always green
+          - Right deck song = always orange
         """
+        GREEN_COLOR  = (80,  180, 80)
+        ORANGE_COLOR = (0,   120, 255)
+        
+        if deck == 0:
+            main_color     = GREEN_COLOR
+            other_color    = ORANGE_COLOR
+        else:
+            main_color     = ORANGE_COLOR
+            other_color    = GREEN_COLOR
+
         grid = self.grids.get(track_index)
         if grid is None or not grid.ready or grid.waveform is None:
-            # not ready yet — draw a placeholder bar
             x1 = cx - self.STRIP_W // 2
             cv.rectangle(frame,
                          (x1, y), (x1 + self.STRIP_W, y + self.STRIP_H),
@@ -171,22 +189,28 @@ class BeatGridManager:
 
         wf        = grid.waveform
         ds_factor = max(1, int(grid.sample_rate * 0.005))
-        wf_sr     = grid.sample_rate / ds_factor   # samples per second in wf
+        wf_sr     = grid.sample_rate / ds_factor
 
+        half_h    = self.STRIP_H // 2
         half_w_sec = self.WINDOW_SEC / 2.0
         x1 = cx - self.STRIP_W // 2
         x2 = cx + self.STRIP_W // 2
+        y_top = y
+        y_bot = y + half_h
 
-        # ── background ───────────────────────────────────────────────────────
         cv.rectangle(frame, (x1, y), (x2, y + self.STRIP_H),
                      (25, 25, 25), cv.FILLED)
         cv.rectangle(frame, (x1, y), (x2, y + self.STRIP_H),
                      (70, 70, 70), 1)
+        cv.line(frame, (x1, y + half_h), (x2, y + half_h), (50, 50, 50), 1)
 
-        mid_y = y + self.STRIP_H // 2
+        mid_y_top  = y + half_h // 2
+        mid_y_bot  = y + half_h + half_h // 2
+        bar_max_h  = half_h // 2 - 2
 
-        # ── other deck waveform (drawn first, behind the main waveform) ───────
         other_grid = self.grids.get(other_track_index) if other_track_index is not None else None
+
+        # ── TOP: other deck waveform + beat markers ──────────────────────────
         if (other_grid is not None and other_grid.ready
                 and other_grid.waveform is not None
                 and other_position_sec is not None):
@@ -198,13 +222,12 @@ class BeatGridManager:
                 wi = int(t * other_wf_sr)
                 if 0 <= wi < len(other_wf):
                     amp   = other_wf[wi]
-                    bar_h = max(1, int(amp * (self.STRIP_H // 2 - 2)))
+                    bar_h = max(1, int(amp * bar_max_h))
                     cv.line(frame,
-                            (x1 + px, mid_y - bar_h),
-                            (x1 + px, mid_y + bar_h),
-                            self.OTHER_WAVEFORM_COLOR, 1)
+                            (x1 + px, mid_y_top - bar_h),
+                            (x1 + px, mid_y_top + bar_h),
+                            other_color, 1)
 
-            # other deck beat markers in red
             o_start = other_position_sec - half_w_sec
             o_end   = other_position_sec + half_w_sec
             for bt in other_grid.beat_times:
@@ -213,51 +236,46 @@ class BeatGridManager:
                     bx   = x1 + int(rel * self.STRIP_W)
                     bidx = other_grid.beat_times.index(bt)
                     is_bar   = (bidx % 4 == 0)
-                    tick_h   = self.STRIP_H if is_bar else self.STRIP_H // 2
-                    tick_y   = y if is_bar else y + self.STRIP_H // 4
+                    tick_h   = half_h if is_bar else half_h // 2
+                    tick_y   = y_top if is_bar else y_top + half_h // 4
                     thickness = 2 if is_bar else 1
                     cv.line(frame, (bx, tick_y), (bx, tick_y + tick_h),
-                            self.OTHER_BEAT_COLOR, thickness)
+                            other_color, thickness)
 
-        # ── main waveform bars ────────────────────────────────────────────────
-        # Map each pixel column to a time, then index into waveform array
+        # ── BOTTOM: main deck waveform + beat markers ─────────────────────────
         for px in range(self.STRIP_W):
             t = position_sec + (px / self.STRIP_W - 0.5) * self.WINDOW_SEC
             wi = int(t * wf_sr)
             if 0 <= wi < len(wf):
                 amp   = wf[wi]
-                bar_h = max(1, int(amp * (self.STRIP_H // 2 - 2)))
-                screen_x = x1 + px
-                # dim waveform behind the playhead, bright ahead
+                bar_h = max(1, int(amp * bar_max_h))
                 alpha = 0.5 if t < position_sec else 1.0
-                c = tuple(int(v * alpha) for v in self.WAVEFORM_COLOR)
+                c = tuple(int(v * alpha) for v in main_color)
                 cv.line(frame,
-                        (screen_x, mid_y - bar_h),
-                        (screen_x, mid_y + bar_h),
+                        (x1 + px, mid_y_bot - bar_h),
+                        (x1 + px, mid_y_bot + bar_h),
                         c, 1)
 
-        # ── main deck beat markers ────────────────────────────────────────────
         t_start = position_sec - half_w_sec
         t_end   = position_sec + half_w_sec
         for bt in grid.beat_times:
             if t_start <= bt <= t_end:
-                rel  = (bt - t_start) / self.WINDOW_SEC   # 0..1
+                rel  = (bt - t_start) / self.WINDOW_SEC
                 bx   = x1 + int(rel * self.STRIP_W)
-                # taller tick on beat 1 of every 4
                 beat_idx = grid.beat_times.index(bt)
                 is_bar   = (beat_idx % 4 == 0)
-                tick_h   = self.STRIP_H if is_bar else self.STRIP_H // 2
-                tick_y   = y if is_bar else y + self.STRIP_H // 4
+                tick_h   = half_h if is_bar else half_h // 2
+                tick_y   = y_bot if is_bar else y_bot + half_h // 4
                 color    = (0, 255, 180) if is_bar else self.BEAT_COLOR
                 thickness = 2 if is_bar else 1
                 cv.line(frame, (bx, tick_y), (bx, tick_y + tick_h),
                         color, thickness)
 
-        # ── playhead (centre line) ────────────────────────────────────────────
+        # ── playhead ────────────────────────────────────────────────────────
         ph_color = (0, 255, 255) if is_playing else (160, 160, 160)
         cv.line(frame, (cx, y), (cx, y + self.STRIP_H), ph_color, 2)
 
-        # ── time left label ───────────────────────────────────────────────────
+        # ── time left ───────────────────────────────────────────────────────
         remaining = max(0.0, grid.duration - position_sec)
         mins = int(remaining // 60)
         secs = int(remaining  % 60)

@@ -150,41 +150,76 @@ while cam.isOpened():
 
     # Initialize UI elements
     if left_button is None:
-        center_x = w//2
-        button_y = int(h*0.83)
-        left_button = PlayButton(center=(center_x-200, button_y), radius=30, label="PLAY 1")
-        right_button = PlayButton(center=(center_x+200, button_y), radius=30, label="PLAY 2")
-        left_load_button = LoadButton(center=(center_x-200, button_y-70), radius=25, label="LOAD")
-        right_load_button = LoadButton(center=(center_x+200, button_y-70), radius=25, label="LOAD")
-        left_cue_button = CueButton(center=(center_x-130, button_y), radius=25, label="CUE")
-        right_cue_button = CueButton(center=(center_x+130, button_y), radius=25, label="CUE")
+        # Layout constants - fully symmetrical
+        MARGIN_X = 120          # Distance from screen edge for button clusters
+        JOG_X_OFFSET = 280      # Jog wheel X distance from edge
+        VOL_X_OFFSET = 70       # Volume slider X distance from edge
+        BUTTON_SPACING = 150    # Horizontal spacing between buttons
+        JOG_RADIUS = 140        # Jog wheel radius
+        
+        # Button Y position (bottom of screen)
+        BUTTON_Y = int(h * 0.85)
+        
+        # Jog wheel Y position (middle of screen)
+        JOG_Y = int(h * 0.52)
+        
+        # Volume slider dimensions
+        slider_width = 30
+        slider_height = 180
+        
+        # Stem pad Y (below jogs)
+        STEM_PAD_Y = JOG_Y + JOG_RADIUS + 80
+        
+        # BPM display Y (below stem pads)
+        BPM_Y = JOG_Y + JOG_RADIUS + 180
         
         # Record button - top center
-        record_button = RecordButton(center=(center_x, 60), radius=35)
+        record_button = RecordButton(center=(w//2, 60), radius=35)
         
-        jog_y = int(h*0.55)
-        left_jog = JogWheel(center=(center_x-350, jog_y), radius=160)
-        right_jog = JogWheel(center=(center_x+350, jog_y), radius=160)
+        # Play buttons - outer edges
+        left_button = PlayButton(center=(MARGIN_X + 2 * BUTTON_SPACING, BUTTON_Y), radius=30, label="PLAY")
+        right_button = PlayButton(center=(w - MARGIN_X - 2 * BUTTON_SPACING, BUTTON_Y), radius=30, label="PLAY")
         
-        # BPM displays - below jog wheels (time text is at radius+50, BPM sits at radius+75)
-        left_bpm_display = BPMDisplay(position=(center_x-350-40, jog_y+160+75))
-        right_bpm_display = BPMDisplay(position=(center_x+350-40, jog_y+160+75))
+        # Cue buttons - middle position
+        left_cue_button = CueButton(center=(MARGIN_X + BUTTON_SPACING, BUTTON_Y), radius=25, label="CUE")
+        right_cue_button = CueButton(center=(w - MARGIN_X - BUTTON_SPACING, BUTTON_Y), radius=25, label="CUE")
+        
+        # Load buttons - inner position
+        left_load_button = LoadButton(center=(MARGIN_X, BUTTON_Y), radius=25, label="LOAD")
+        right_load_button = LoadButton(center=(w - MARGIN_X, BUTTON_Y), radius=25, label="LOAD")
+        
+        # Jog wheels - center of each deck
+        left_jog = JogWheel(center=(MARGIN_X + JOG_X_OFFSET, JOG_Y), radius=JOG_RADIUS)
+        right_jog = JogWheel(center=(w - MARGIN_X - JOG_X_OFFSET, JOG_Y), radius=JOG_RADIUS)
+        
+        # BPM displays - below stem pads, aligned with wheel center
+        left_bpm_display = BPMDisplay(position=(left_jog.cx, BPM_Y))
+        right_bpm_display = BPMDisplay(position=(right_jog.cx, BPM_Y))
 
-        slider_width = 30
-        slider_height = 200
-        slider_offset = 220
-        left_volume = VolumeSlider(x=left_jog.cx - slider_offset - slider_width, y=left_jog.cy - slider_height//2, width=slider_width, height=slider_height, track_index=0)
-        right_volume = VolumeSlider(x=right_jog.cx + slider_offset, y=right_jog.cy - slider_height//2, width=slider_width, height=slider_height, track_index=1)
+        # Volume sliders - far left/right edges
+        left_volume = VolumeSlider(
+            x=VOL_X_OFFSET, 
+            y=JOG_Y - slider_height//2, 
+            width=slider_width, 
+            height=slider_height, 
+            track_index=0
+        )
+        right_volume = VolumeSlider(
+            x=w - VOL_X_OFFSET - slider_width, 
+            y=JOG_Y - slider_height//2, 
+            width=slider_width, 
+            height=slider_height, 
+            track_index=1
+        )
 
-        # Stem pad banks — own row below play/cue, in the center gap
-        stem_pad_y = button_y + 65
+        # Stem pad banks - below jog wheels, on deck center line
         left_stem_bank = StemPadBank(
-            position=(center_x - 55, stem_pad_y),
+            position=(left_jog.cx, STEM_PAD_Y),
             track_index=0,
             deck_label="L"
         )
         right_stem_bank = StemPadBank(
-            position=(center_x + 55, stem_pad_y),
+            position=(right_jog.cx, STEM_PAD_Y),
             track_index=1,
             deck_label="R"
         )
@@ -239,6 +274,7 @@ while cam.isOpened():
                     if left_song_index >= 0:
                         mc.stop(left_song_index)
                     left_song_index = highlighted_index
+                    beat_grid_manager.set_track_deck(left_song_index, 0)
                     mc.stop(left_song_index)
                     highlighted_index = None
                     left_load_active = True
@@ -246,6 +282,7 @@ while cam.isOpened():
                     if right_song_index >= 0:
                         mc.stop(right_song_index)
                     right_song_index = highlighted_index
+                    beat_grid_manager.set_track_deck(right_song_index, 1)
                     mc.stop(right_song_index)
                     highlighted_index = None
                     right_load_active = True
@@ -402,6 +439,7 @@ while cam.isOpened():
             mc.get_position(left_song_index),
             cx=left_jog.cx, y=strip_y,
             is_playing=mc.is_playing(left_song_index),
+            deck=0,
             other_track_index=right_song_index if right_song_index >= 0 else None,
             other_position_sec=mc.get_position(right_song_index) if right_song_index >= 0 else None
         )
@@ -411,6 +449,7 @@ while cam.isOpened():
             mc.get_position(right_song_index),
             cx=right_jog.cx, y=strip_y,
             is_playing=mc.is_playing(right_song_index),
+            deck=1,
             other_track_index=left_song_index if left_song_index >= 0 else None,
             other_position_sec=mc.get_position(left_song_index) if left_song_index >= 0 else None
         )
