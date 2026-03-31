@@ -98,6 +98,9 @@ class TrackState:
         self.stems = {}          # stem_type -> audio_data
         self.stem_enabled = {}   # stem_type -> bool
         self.has_stems = False
+
+        # Cue point
+        self.cue_point = None    # posición en segundos, o None si no está establecido
         
         print(f"  Duration: {self.duration:.2f}s, Sample rate: {self.sample_rate}Hz, Channels: {self.audio_data.shape[1]}")
     
@@ -321,7 +324,7 @@ def load_music_folder(folder_path):
     stem_manager = get_auto_stem_manager(str(folder_path))
     
     print("\n🎵 Generating stems (this may take a few minutes)...")
-    stem_manager.process_all_songs(songs, full_separation=True)
+    stem_manager.process_all_songs(songs)
     
     print("\n🎵 Loading songs...")
     for i, song_path in enumerate(songs):
@@ -506,6 +509,48 @@ def stop(index):
                     if s.is_playing:
                         active_track = i
                         break
+
+def start_cue(index):
+    """Presionar CUE (flanco de subida): salta al cue_point y empieza a reproducir.
+    Si no hay cue_point fijado, lo establece en la posición actual primero.
+    """
+    global active_track
+    if index < 0 or index >= len(songs):
+        return
+    state = track_states[index]
+    with mixer.lock:
+        if state.cue_point is None:
+            state.cue_point = state.position
+        state.position = state.cue_point
+        state.playback_position = int(state.cue_point * state.sample_rate)
+        state.is_playing = True
+        state.last_update_time = time.time()
+        active_track = index
+
+def release_cue(index):
+    """Soltar CUE (flanco de bajada): para y vuelve al cue_point."""
+    global active_track
+    if index < 0 or index >= len(songs):
+        return
+    state = track_states[index]
+    with mixer.lock:
+        state.is_playing = False
+        state.last_update_time = None
+        if state.cue_point is not None:
+            state.position = state.cue_point
+            state.playback_position = int(state.cue_point * state.sample_rate)
+        if active_track == index:
+            active_track = -1
+            for i, s in track_states.items():
+                if s.is_playing:
+                    active_track = i
+                    break
+
+def get_cue_point(index):
+    """Retorna la posición del cue point en segundos, o None."""
+    if index < 0 or index >= len(songs):
+        return None
+    return track_states[index].cue_point
 
 def prepare_track_scratch_buffer(index, buffer_duration=None):
     global scratch_track_buffer, scratch_track_index, scratch_track_buffer_position

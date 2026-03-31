@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "WebSearch",
+      "WebFetch(domain:support.alphatheta.com)",
+      "WebFetch(domain:www.manualslib.com)",
+      "WebFetch(domain:www.thedjshop.co.uk)",
+      "WebFetch(domain:community.pioneerdj.com)",
+      "WebFetch(domain:support.pioneerdj.com)"
+    ]
+  }
+}
