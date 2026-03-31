@@ -1,6 +1,9 @@
 echo "__pycache__/" >> .gitignore
 echo "*.pyc" >> .gitignore
 
-__pycache__
+__pycache__/
 beat_cache
 recordings
+.venv/
+
+
