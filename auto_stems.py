@@ -80,24 +80,10 @@ class AutoStemManager:
     # ------------------------------------------------------------------
     # Stem existence check
     # ------------------------------------------------------------------
-    def _stems_exist(self, mp3_path, full_separation=False):
+    def _stems_exist(self, mp3_path):
         mp3_path = Path(mp3_path)
         song_stem = mp3_path.stem
-
-        if full_separation:
-            required = [
-                self.music_folder / f"{song_stem}_vocals.mp3",
-                self.music_folder / f"{song_stem}_drums.mp3",
-                self.music_folder / f"{song_stem}_bass.mp3",
-                self.music_folder / f"{song_stem}_other.mp3",
-            ]
-        else:
-            required = [
-                self.music_folder / f"{song_stem}_vocals.mp3",
-                self.music_folder / f"{song_stem}_instrumental.mp3",
-            ]
-
-        return all(s.exists() for s in required)
+        return (self.music_folder / f"{song_stem}_vocals.mp3").exists()
 
     # ------------------------------------------------------------------
     # 2-stem separation  (vocals + instrumental)
@@ -110,12 +96,9 @@ class AutoStemManager:
         mp3_path = Path(mp3_path)
         song_name = mp3_path.stem
 
-        if self._stems_exist(mp3_path, full_separation=False):
+        if self._stems_exist(mp3_path):
             print(f"  ✓ Stems already exist for {mp3_path.name}, skipping...")
-            return {
-                'vocals':       str(self.music_folder / f"{song_name}_vocals.mp3"),
-                'instrumental': str(self.music_folder / f"{song_name}_instrumental.mp3"),
-            }
+            return {'vocals': str(self.music_folder / f"{song_name}_vocals.mp3")}
 
         print(f"  Separating stems for {mp3_path.name}...")
 
@@ -140,16 +123,12 @@ class AutoStemManager:
                 return None
 
             stems = {}
-            for src_name, stem_type, suffix in [
-                ('vocals.mp3',    'vocals',       '_vocals.mp3'),
-                ('no_vocals.mp3', 'instrumental', '_instrumental.mp3'),
-            ]:
-                src = demucs_output / src_name
-                if src.exists():
-                    dest = self.music_folder / f"{song_name}{suffix}"
-                    shutil.copy2(src, dest)
-                    stems[stem_type] = str(dest)
-                    self.generated_stems.append(dest)
+            src = demucs_output / 'vocals.mp3'
+            if src.exists():
+                dest = self.music_folder / f"{song_name}_vocals.mp3"
+                shutil.copy2(src, dest)
+                stems['vocals'] = str(dest)
+                self.generated_stems.append(dest)
 
             if self.stems_folder.exists():
                 shutil.rmtree(self.stems_folder, ignore_errors=True)
@@ -165,87 +144,9 @@ class AutoStemManager:
             return None
 
     # ------------------------------------------------------------------
-    # 4-stem separation  (drums + bass + vocals + other)
-    # ------------------------------------------------------------------
-    def separate_song_full(self, mp3_path):
-        if not self.demucs_available:
-            return None
-
-        mp3_path = Path(mp3_path)
-        song_name = mp3_path.stem
-
-        if self._stems_exist(mp3_path, full_separation=True):
-            print(f"  ✓ Stems already exist for {mp3_path.name}, skipping...")
-            stems = {
-                'vocals': str(self.music_folder / f"{song_name}_vocals.mp3"),
-                'drums':  str(self.music_folder / f"{song_name}_drums.mp3"),
-                'bass':   str(self.music_folder / f"{song_name}_bass.mp3"),
-                'other':  str(self.music_folder / f"{song_name}_other.mp3"),
-            }
-            inst = self.music_folder / f"{song_name}_instrumental.mp3"
-            if inst.exists():
-                stems['instrumental'] = str(inst)
-            return stems
-
-        print(f"  Full stem separation for {mp3_path.name}...")
-
-        try:
-            self.stems_folder.mkdir(parents=True, exist_ok=True)
-            returncode, stderr = self._run_demucs(
-                ['-o', str(self.stems_folder), '--mp3', '--mp3-bitrate', '192'],
-                mp3_path, timeout=900
-            )
-
-            if returncode != 0:
-                print(f"  ❌ Failed full separation for {mp3_path.name}")
-                if stderr:
-                    print(f"     Error: {stderr[:300]}")
-                return None
-
-            demucs_output = self.stems_folder / 'htdemucs' / song_name
-            if not demucs_output.exists():
-                print(f"  ❌ Demucs output not found at {demucs_output}")
-                return None
-
-            stems = {}
-            for src_name, stem_type in [
-                ('drums.mp3',  'drums'),
-                ('vocals.mp3', 'vocals'),
-                ('bass.mp3',   'bass'),
-                ('other.mp3',  'other'),
-            ]:
-                src = demucs_output / src_name
-                if src.exists():
-                    dest = self.music_folder / f"{song_name}_{stem_type}.mp3"
-                    shutil.copy2(src, dest)
-                    stems[stem_type] = str(dest)
-                    self.generated_stems.append(dest)
-
-            # no_vocals → instrumental
-            no_vocals = demucs_output / 'no_vocals.mp3'
-            if no_vocals.exists():
-                dest = self.music_folder / f"{song_name}_instrumental.mp3"
-                shutil.copy2(no_vocals, dest)
-                stems['instrumental'] = str(dest)
-                self.generated_stems.append(dest)
-
-            if self.stems_folder.exists():
-                shutil.rmtree(self.stems_folder, ignore_errors=True)
-
-            print(f"  ✓ Generated {len(stems)} stems: {', '.join(stems.keys())}")
-            return stems
-
-        except subprocess.TimeoutExpired:
-            print(f"  ❌ Timeout in full separation for {mp3_path.name}")
-            return None
-        except Exception as e:
-            print(f"  ❌ Error in full separation for {mp3_path.name}: {e}")
-            return None
-
-    # ------------------------------------------------------------------
     # Process all songs
     # ------------------------------------------------------------------
-    def process_all_songs(self, mp3_files, full_separation=False):
+    def process_all_songs(self, mp3_files):
         """Process all songs, skipping any that already have stems on disk."""
         if not self.demucs_available:
             print("⚠ Demucs not installed — skipping stem generation")
@@ -254,10 +155,7 @@ class AutoStemManager:
 
         self.stems_folder.mkdir(parents=True, exist_ok=True)
 
-        songs_to_process = [
-            f for f in mp3_files
-            if not self._stems_exist(f, full_separation)
-        ]
+        songs_to_process = [f for f in mp3_files if not self._stems_exist(f)]
 
         if not songs_to_process:
             print("✓ All stems already exist! Fast startup ⚡")
@@ -270,10 +168,7 @@ class AutoStemManager:
         print()
 
         for mp3_file in mp3_files:
-            if full_separation:
-                self.separate_song_full(mp3_file)
-            else:
-                self.separate_song(mp3_file)
+            self.separate_song(mp3_file)
 
         print("✓ Stem generation complete!")
         print("💾 Stems kept on disk — next startup will be instant!")

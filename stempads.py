@@ -77,31 +77,20 @@ class StemPadBank:
         self.deck_label = deck_label
         
         # Button dimensions
-        self.button_width = 50
-        self.button_height = 30
+        self.button_width = 70
+        self.button_height = 45
         self.spacing = 8
         
         # Pads created dynamically based on available stems
         self.pads = []
         self.current_stems = []
         
-        # Stem type to display label mapping
-        self.stem_labels = {
-            'drums':        'DRM',
-            'vocals':       'VOX',
-            'bass':         'BAS',
-            'other':        'OTH',
-            'instrumental': 'INST'
-        }
+        # Solo vocals
+        self.stem_labels = {'vocals': 'VOX'}
     
     def _create_pads(self, available_stems):
-        """Create pads based on available stems"""
-        stem_order = ['drums', 'bass', 'vocals', 'other', 'instrumental']
-        sorted_stems = [s for s in stem_order if s in available_stems]
-        # Append any stems not in predefined order
-        for s in available_stems:
-            if s not in sorted_stems:
-                sorted_stems.append(s)
+        """Create pads based on available stems (vocals only)"""
+        sorted_stems = [s for s in available_stems if s == 'vocals']
         
         self.pads = []
         num_stems = len(sorted_stems)
