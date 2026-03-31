@@ -21,6 +21,8 @@ import threading
 import pickle
 from pathlib import Path
 
+from bpm_display_only import CUSTOM_BPM, get_bpm_override
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Beat detector  (reuses the autocorrelation from bpm_display_only.py but
@@ -107,22 +109,20 @@ class BeatGridManager:
                 grid.bpm        = cached["bpm"]
                 grid.beat_times = cached["beat_times"]
                 grid.ready      = True
-                with self.grids.get(track_index, threading.Lock()) if False else threading.Lock():
-                    pass
                 self.grids[track_index] = grid
-                print(f"    ✓ Beat grid from cache: {grid.bpm:.1f} BPM, "
+                print(f"    [OK] Beat grid from cache: {grid.bpm:.1f} BPM, "
                       f"{len(grid.beat_times)} beats")
                 return
             except Exception:
                 pass
 
-        # Run autocorrelation BPM on first 30 s
-        bpm = self._detect_bpm(mono, sample_rate)
+        # Get BPM - use custom override or default 172 BPM
+        bpm = CUSTOM_BPM.get(track_index, 172.0)
         grid.bpm = bpm
 
         # Generate beat grid from BPM + first-beat onset
         beat_period = 60.0 / bpm
-        first_beat  = self._find_first_beat(mono, sample_rate, beat_period)
+        first_beat  = 0.0
         beat_times  = []
         t = first_beat
         while t < grid.duration:
@@ -133,13 +133,13 @@ class BeatGridManager:
         # cache
         try:
             with open(cache_path, "wb") as f:
-                pickle.dump({"bpm": bpm, "beat_times": beat_times}, f)
+                pickle.dump({"bpm": bpm, "beat_times": grid.beat_times}, f)
         except Exception:
             pass
 
         grid.ready = True
         self.grids[track_index] = grid
-        print(f"    ✓ Beat grid computed: {bpm:.1f} BPM, {len(beat_times)} beats")
+        print(f"    [OK] Beat grid computed: {bpm:.1f} BPM, {len(beat_times)} beats")
 
     # ── per-frame drawing ─────────────────────────────────────────────────────
 
@@ -406,32 +406,3 @@ class BeatGridManager:
             return round(max(candidates, key=lambda x: x[0])[1], 1)
         return round(float(np.clip(raw_bpm, bpm_lo, bpm_hi)), 1)
 
-    def _find_first_beat(self, mono, sample_rate, beat_period):
-        """
-        Estimate when the first beat lands by looking for the first
-        strong energy onset in the first 4 beat periods.
-        Falls back to 0.0 if nothing convincing is found.
-        """
-        search_end = min(len(mono), int(4 * beat_period * sample_rate))
-        if search_end < 1024:
-            return 0.0
-
-        hop  = 256
-        flen = 512
-        segment = mono[:search_end]
-        n_frames = (len(segment) - flen) // hop
-
-        energy = np.array([
-            np.sum(segment[i * hop: i * hop + flen] ** 2)
-            for i in range(n_frames)
-        ], dtype=np.float32)
-
-        if len(energy) == 0:
-            return 0.0
-
-        thresh = np.mean(energy) + 0.5 * np.std(energy)
-        for i, e in enumerate(energy):
-            if e > thresh:
-                return (i * hop) / sample_rate
-
-        return 0.0
