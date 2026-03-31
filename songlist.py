@@ -1,7 +1,7 @@
 import cv2 as cv
 
 class SongList:
-    def __init__(self, songs, position=(0, 0), width=250, item_height=30):
+    def __init__(self, songs, position=(0, 0), width=280, item_height=35):
         self.songs = songs
         self.x, self.y = position
         self.width = width
@@ -23,6 +23,12 @@ class SongList:
         
         # Header height (for dragging and collapsing)
         self.header_height = 35
+
+    def _truncate_text(self, text, max_chars=28):
+        """Truncate text with ellipsis if too long"""
+        if len(text) > max_chars:
+            return text[:max_chars - 3] + "..."
+        return text
 
     def get_header_bounds(self):
         """Return the bounds of the header (for dragging and collapsing)"""
@@ -116,16 +122,20 @@ class SongList:
 
                 # Highlight background if this song is selected
                 if i == highlight_index:
-                    cv.rectangle(frame, top_left, bottom_right, (0, 255, 0), cv.FILLED)
+                    cv.rectangle(frame, top_left, bottom_right, (0, 200, 80), cv.FILLED)
                 else:
-                    cv.rectangle(frame, top_left, bottom_right, (50, 50, 50), cv.FILLED)
+                    cv.rectangle(frame, top_left, bottom_right, (45, 45, 45), cv.FILLED)
 
+                # Subtle top border for depth
+                cv.line(frame, (top_left[0], top_left[1]), (bottom_right[0], top_left[1]), (70, 70, 70), 1)
+                
                 # Draw border
-                cv.rectangle(frame, top_left, bottom_right, (0, 0, 0), 2)
+                cv.rectangle(frame, top_left, bottom_right, (30, 30, 30), 1)
 
-                # Draw song name
-                cv.putText(frame, song, (self.x + 5, list_y_start + (i + 1) * self.item_height - 10),
-                           cv.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+                # Draw song name (truncated)
+                text = self._truncate_text(song, max_chars=30)
+                cv.putText(frame, text, (self.x + 8, list_y_start + i * self.item_height + self.item_height // 2 + 5),
+                           cv.FONT_HERSHEY_SIMPLEX, 0.5, (220, 220, 220), 1)
 
     def check_pinch(self, pinch_positions):
         """Return the index of the song being pinched, if any (only when expanded)"""
