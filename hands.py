@@ -1,4 +1,5 @@
 import os
+import sys
 import ctypes
 import cv2 as cv
 import mediapipe as mp
@@ -8,16 +9,21 @@ from mediapipe.tasks.python import vision
 import math
 from playbutton import PlayButton
 from jogwheel import JogWheel
+from gotostartbutton import GotoStartButton
 import music as mc
 import time
 import songlist
 
 from volumeSlider import VolumeSlider
 from stempads import StemPadBank
-from recorder import DJRecorder, RecordButton
 from cuebutton import CueButton
 from bpm_display_only import BeatMatcher, BPMDisplay
 from beat_grid import BeatGridManager
+
+USE_STEMS = True
+if len(sys.argv) > 1 and sys.argv[1].lower() == '--no-stems':
+    USE_STEMS = False
+    print("🎚️  Running without stem separation (original tracks only)")
 
 # -----------------------------
 # Initialize Beat Matcher FIRST (must exist before load_music_folder)
@@ -32,23 +38,10 @@ print(f"🎼 Beat grid manager initialized")
 print()
 
 # -----------------------------
-# Initialize Recorder
-# -----------------------------
-recorder = DJRecorder(output_folder="recordings")
-print(f"📹 Recorder initialized")
-if not recorder.is_ffmpeg_available():
-    print("⚠️  ffmpeg not found - install with: brew install ffmpeg")
-    print("   Recording will work but videos won't be combined")
-print()
-
-# Set recorder in music module so it can capture audio
-mc.audio_recorder = recorder
-
-# -----------------------------
 # Load Music (beat_matcher must already be set above)
 # -----------------------------
 MUSIC_FOLDER = "MP3"
-mc.load_music_folder(MUSIC_FOLDER)
+mc.load_music_folder(MUSIC_FOLDER, use_stems=USE_STEMS)
 
 # -----------------------------
 # Deck Initialization
@@ -165,6 +158,9 @@ def format_time(seconds):
     secs = int(seconds % 60)
     return f"{minutes:02d}:{secs:02d}"
 
+def _angle_from_center(cx, cy, x, y):
+    return math.atan2(y - cy, x - cx)
+
 
 
 # -----------------------------
@@ -173,18 +169,28 @@ def format_time(seconds):
 cam = cv.VideoCapture(0)
 frame_idx = 0
 left_button = right_button = None
-left_cue_button = right_cue_button = None
-left_cue_held = False
-right_cue_held = False
 left_jog = right_jog = None
+left_goto_button = right_goto_button = None
 left_volume = right_volume = None
 left_stem_bank = right_stem_bank = None
-record_button = None
 left_bpm_display = right_bpm_display = None
 beat_grid_manager_ui = None  # alias for drawing
 pinching_previous = set()
 left_detector = PinchDetector()
 right_detector = PinchDetector()
+
+left_jog_pinching = False
+right_jog_pinching = False
+left_jog_last_angle = None
+right_jog_last_angle = None
+
+left_last_load_time = 0
+right_last_load_time = 0
+load_debounce_delay = 1.0  # 1 second between loads per deck
+
+left_last_loaded_song = -1
+right_last_loaded_song = -1
+jog_debounce_after_load = 0.5  # Disable jog scrubbing for 0.5s after loading
 
 # -----------------------------
 # Main Loop
@@ -215,7 +221,6 @@ while cam.isOpened():
         # Layout constants - fully symmetrical
         MARGIN_X = 120          # Distance from screen edge for button clusters
         JOG_X_OFFSET = 280      # Jog wheel X distance from edge
-        VOL_X_OFFSET = 70       # Volume slider X distance from edge
         BUTTON_SPACING = 150    # Horizontal spacing between buttons
         JOG_RADIUS = 140        # Jog wheel radius
         
@@ -229,22 +234,24 @@ while cam.isOpened():
         slider_width = 30
         slider_height = 180
         
+        # Volume slider X position (middle of deck)
+        vol_x_left = MARGIN_X + (JOG_X_OFFSET - MARGIN_X) // 2 - slider_width // 2
+        vol_x_right = w - (MARGIN_X + (JOG_X_OFFSET - MARGIN_X) // 2) - slider_width // 2
+        
         # Stem pad Y (below jogs)
         STEM_PAD_Y = JOG_Y + JOG_RADIUS + 80
         
         # BPM display Y (below stem pads)
         BPM_Y = JOG_Y + JOG_RADIUS + 180
         
-        # Record button - top center
-        record_button = RecordButton(center=(w//2, 60), radius=35)
-        
         # Play buttons - outer edges
         left_button = PlayButton(center=(MARGIN_X + 2 * BUTTON_SPACING, BUTTON_Y), radius=30, label="PLAY")
         right_button = PlayButton(center=(w - MARGIN_X - 2 * BUTTON_SPACING, BUTTON_Y), radius=30, label="PLAY")
         
-        # Cue buttons - middle position
-        left_cue_button = CueButton(center=(MARGIN_X + BUTTON_SPACING, BUTTON_Y), radius=25, label="CUE")
-        right_cue_button = CueButton(center=(w - MARGIN_X - BUTTON_SPACING, BUTTON_Y), radius=25, label="CUE")
+        # Goto start buttons (<<) - next to play buttons with separation
+        goto_spacing = 60
+        left_goto_button = GotoStartButton(center=(MARGIN_X + 2 * BUTTON_SPACING + goto_spacing, BUTTON_Y), radius=18, label="<<")
+        right_goto_button = GotoStartButton(center=(w - MARGIN_X - 2 * BUTTON_SPACING - goto_spacing, BUTTON_Y), radius=18, label="<<")
         
         # Jog wheels - center of each deck
         left_jog = JogWheel(center=(MARGIN_X + JOG_X_OFFSET, JOG_Y), radius=JOG_RADIUS)
@@ -254,16 +261,16 @@ while cam.isOpened():
         left_bpm_display = BPMDisplay(position=(left_jog.cx, BPM_Y))
         right_bpm_display = BPMDisplay(position=(right_jog.cx, BPM_Y))
 
-        # Volume sliders - far left/right edges
+        # Volume sliders - middle of each deck
         left_volume = VolumeSlider(
-            x=VOL_X_OFFSET, 
+            x=vol_x_left, 
             y=JOG_Y - slider_height//2, 
             width=slider_width, 
             height=slider_height, 
             track_index=0
         )
         right_volume = VolumeSlider(
-            x=w - VOL_X_OFFSET - slider_width, 
+            x=vol_x_right, 
             y=JOG_Y - slider_height//2, 
             width=slider_width, 
             height=slider_height, 
@@ -331,22 +338,32 @@ while cam.isOpened():
     # -----------------------------
     # Load Song to Deck via JogWheel
     # -----------------------------
-    if not song_list_panel.is_collapsed and not song_list_panel.is_dragging:
-        for px, py in pinch_positions:
-            if highlighted_index is not None:
-                if left_jog.contains(px, py):
+    current_time = time.time()
+    for px, py in pinch_positions:
+        if highlighted_index is not None:
+            if left_jog.contains(px, py):
+                if current_time - left_last_load_time > load_debounce_delay:
+                    left_last_load_time = current_time
+                    left_last_loaded_song = highlighted_index
                     if left_song_index >= 0:
                         mc.stop(left_song_index)
                     left_song_index = highlighted_index
                     beat_grid_manager.set_track_deck(left_song_index, 0)
                     mc.stop(left_song_index)
+                    mc.set_song_index(0, left_song_index)
+                    
                     highlighted_index = None
-                if right_jog.contains(px, py):
+            if right_jog.contains(px, py):
+                if current_time - right_last_load_time > load_debounce_delay:
+                    right_last_load_time = current_time
+                    right_last_loaded_song = highlighted_index
                     if right_song_index >= 0:
                         mc.stop(right_song_index)
                     right_song_index = highlighted_index
                     beat_grid_manager.set_track_deck(right_song_index, 1)
                     mc.stop(right_song_index)
+                    mc.set_song_index(1, right_song_index)
+                    
                     highlighted_index = None
 
     # -----------------------------
@@ -365,41 +382,15 @@ while cam.isOpened():
     
     if left_active and left_button.center not in pinching_previous:
         mc.toggle_play(left_song_index)
+        mc.set_song_index(0, left_song_index)
 
     if right_active and right_button.center not in pinching_previous:
         mc.toggle_play(right_song_index)
+        mc.set_song_index(1, right_song_index)
 
     pinching_previous = set()
     if left_active: pinching_previous.add(left_button.center)
     if right_active: pinching_previous.add(right_button.center)
-
-    # -----------------------------
-    # CUE Buttons (hold = preview, release = volver al cue y parar)
-    # -----------------------------
-    left_cue_active = left_song_index >= 0 and any(left_cue_button.contains(x, y) for x, y in pinch_positions)
-    right_cue_active = right_song_index >= 0 and any(right_cue_button.contains(x, y) for x, y in pinch_positions)
-
-    if left_cue_active and not left_cue_held:
-        mc.start_cue(left_song_index)
-    elif not left_cue_active and left_cue_held:
-        mc.release_cue(left_song_index)
-
-    if right_cue_active and not right_cue_held:
-        mc.start_cue(right_song_index)
-    elif not right_cue_active and right_cue_held:
-        mc.release_cue(right_song_index)
-
-    left_cue_held = left_cue_active
-    right_cue_held = right_cue_active
-
-    left_cue_pt = mc.get_cue_point(left_song_index) if left_song_index >= 0 else None
-    right_cue_pt = mc.get_cue_point(right_song_index) if right_song_index >= 0 else None
-
-    left_cue_state = "active" if left_cue_active else ("cue_set" if left_cue_pt is not None else "no_cue")
-    right_cue_state = "active" if right_cue_active else ("cue_set" if right_cue_pt is not None else "no_cue")
-
-    left_cue_button.draw(frame, state=left_cue_state)
-    right_cue_button.draw(frame, state=right_cue_state)
 
     # -----------------------------
     # Stem Pads Control
@@ -410,11 +401,11 @@ while cam.isOpened():
             stem: mc.get_stem_state(left_song_index, stem)
             for stem in mc.get_available_stems(left_song_index)
         }
-        pinched_stems = left_stem_bank.update(pinch_positions, left_stem_states)
+        pinched_stems = left_stem_bank.update(pinch_positions, left_stem_states, time.time())
         for stem_type in pinched_stems:
             mc.toggle_stem(left_song_index, stem_type)
     else:
-        left_stem_bank.update([], {'vocals': False})
+        left_stem_bank.update([], {'vocals': False}, time.time())
     left_stem_bank.draw(frame)
 
     # Right deck
@@ -423,24 +414,93 @@ while cam.isOpened():
             stem: mc.get_stem_state(right_song_index, stem)
             for stem in mc.get_available_stems(right_song_index)
         }
-        pinched_stems = right_stem_bank.update(pinch_positions, right_stem_states)
+        pinched_stems = right_stem_bank.update(pinch_positions, right_stem_states, time.time())
         for stem_type in pinched_stems:
             mc.toggle_stem(right_song_index, stem_type)
     else:
-        right_stem_bank.update([], {'vocals': False})
+        right_stem_bank.update([], {'vocals': False}, time.time())
     right_stem_bank.draw(frame)
 
     # -----------------------------
-    # Jog Wheels
+    # Jog Wheels (scrubbing + visual)
     # -----------------------------
-    # Jog Wheels (visual only, no scratching)
-    # -----------------------------
-    if left_song_index>=0 and mc.is_playing(left_song_index):
+    # Left jog wheel scrubbing
+    left_jog_pinch = None
+    right_jog_pinch = None
+    
+    for px, py in pinch_positions:
+        if left_song_index >= 0 and left_jog.contains(px, py):
+            left_jog_pinch = (px, py)
+        if right_song_index >= 0 and right_jog.contains(px, py):
+            right_jog_pinch = (px, py)
+    
+    # Check if within debounce period after loading
+    left_jog_recently_loaded = (left_last_loaded_song == left_song_index and 
+                                current_time - left_last_load_time < jog_debounce_after_load)
+    right_jog_recently_loaded = (right_last_loaded_song == right_song_index and 
+                                 current_time - right_last_load_time < jog_debounce_after_load)
+    
+    # Left jog wheel scrubbing
+    if left_jog_pinch is not None and not left_jog_recently_loaded:
+        if not left_jog_pinching:
+            left_jog_pinching = True
+            left_jog_last_angle = _angle_from_center(left_jog.cx, left_jog.cy, left_jog_pinch[0], left_jog_pinch[1])
+        else:
+            current_angle = _angle_from_center(left_jog.cx, left_jog.cy, left_jog_pinch[0], left_jog_pinch[1])
+            delta = current_angle - left_jog_last_angle
+            if delta > math.pi:
+                delta -= 2 * math.pi
+            elif delta < -math.pi:
+                delta += 2 * math.pi
+            left_jog.angle += delta
+            mc.scrub(delta, left_song_index)
+            left_jog_last_angle = current_angle
+    elif left_jog_pinching:
+        left_jog_pinching = False
+        left_jog_last_angle = None
+        mc.end_scrub(left_song_index)
+    
+    # Right jog wheel scrubbing
+    if right_jog_pinch is not None and not right_jog_recently_loaded:
+        if not right_jog_pinching:
+            right_jog_pinching = True
+            right_jog_last_angle = _angle_from_center(right_jog.cx, right_jog.cy, right_jog_pinch[0], right_jog_pinch[1])
+        else:
+            current_angle = _angle_from_center(right_jog.cx, right_jog.cy, right_jog_pinch[0], right_jog_pinch[1])
+            delta = current_angle - right_jog_last_angle
+            if delta > math.pi:
+                delta -= 2 * math.pi
+            elif delta < -math.pi:
+                delta += 2 * math.pi
+            right_jog.angle += delta
+            mc.scrub(delta, right_song_index)
+            right_jog_last_angle = current_angle
+    elif right_jog_pinching:
+        right_jog_pinching = False
+        right_jog_last_angle = None
+        mc.end_scrub(right_song_index)
+
+    # Visual rotation when playing
+    if left_song_index>=0 and mc.is_playing(left_song_index) and not left_jog_pinching:
         left_jog.angle += 0.05
-    if right_song_index>=0 and mc.is_playing(right_song_index):
+    if right_song_index>=0 and mc.is_playing(right_song_index) and not right_jog_pinching:
         right_jog.angle += 0.05
     left_jog.draw(frame)
     right_jog.draw(frame)
+    
+    # -----------------------------
+    # Goto Start Buttons (<<)
+    # -----------------------------
+    current_time = time.time()
+    if left_song_index >= 0 and left_goto_button.check_press(pinch_positions, current_time):
+        mc.return_to_start(left_song_index)
+        mc.stop(left_song_index)
+    if right_song_index >= 0 and right_goto_button.check_press(pinch_positions, current_time):
+        mc.return_to_start(right_song_index)
+        mc.stop(right_song_index)
+
+    left_goto_button.draw(frame, enabled=left_song_index >= 0)
+    right_goto_button.draw(frame, enabled=right_song_index >= 0)
 
     # -----------------------------
     # Song Names Above Jog Wheels
@@ -540,27 +600,6 @@ while cam.isOpened():
     # -----------------------------
 
     # -----------------------------
-    # Recording Controls
-    # capture LAST — everything above is already drawn onto the frame
-    # -----------------------------
-    record_duration = recorder.get_recording_duration()
-    record_newly_pinched = record_button.update(pinch_positions, recorder.is_recording)
-    
-    if record_newly_pinched:
-        if not recorder.is_recording:
-            if recorder.start_recording(w, h):
-                print(f"🔴 Recording session started")
-        else:
-            output_file = recorder.stop_recording()
-            if output_file:
-                print(f"✅ Session saved: {output_file}")
-    
-    record_button.draw(frame, duration=record_duration)
-
-    # Add frame to recorder LAST — all UI elements including beat grid are drawn by this point
-    if recorder.is_recording:
-        recorder.add_video_frame(frame.copy())
-
     # Show Frame
     cv.imshow("Show Video", frame)
     if cv.waitKey(20) & 0xFF == ord('q'): break

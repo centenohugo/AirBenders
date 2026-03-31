@@ -55,6 +55,25 @@ beat_matcher = None
 # Beat grid manager reference (will be set by hands.py BEFORE load_music_folder is called)
 beat_grid_manager = None
 
+# Sync state - all songs are 172 BPM, sync aligns drum beats (phase)
+BPM = 172.0
+BEAT_PERIOD = 60.0 / BPM  # ~0.349 seconds per beat
+left_sync_enabled = False
+right_sync_enabled = False
+sync_master = None  # 0=left, 1=right, or None
+
+# Song index tracking (set by hands.py)
+left_song_index = -1
+right_song_index = -1
+
+def set_song_index(deck, index):
+    """Set the song index for a deck (called from hands.py)"""
+    global left_song_index, right_song_index
+    if deck == 0:
+        left_song_index = index
+    else:
+        right_song_index = index
+
 
 class TrackState:
     def __init__(self, filepath, target_sample_rate=44100, target_channels=2):
@@ -292,7 +311,10 @@ class AudioMixer:
             # Send audio to recorder if recording
             global audio_recorder
             if audio_recorder is not None:
-                audio_recorder.add_audio_chunk(outdata, self.sample_rate)
+                try:
+                    audio_recorder.add_audio_chunk(outdata, self.sample_rate)
+                except Exception:
+                    pass
 
 
 mixer = None
@@ -301,7 +323,7 @@ output_stream = None
 # -----------------------------
 # Load Music with Stems
 # -----------------------------
-def load_music_folder(folder_path):
+def load_music_folder(folder_path, use_stems=True):
     global songs, track_states, active_track, mixer, output_stream, stem_manager
     
     folder_path = Path(folder_path)
@@ -320,11 +342,15 @@ def load_music_folder(folder_path):
     TARGET_SAMPLE_RATE = 44100
     TARGET_CHANNELS = 2
 
-    # Initialize stem manager and generate stems
-    stem_manager = get_auto_stem_manager(str(folder_path))
-    
-    print("\n🎵 Generating stems (this may take a few minutes)...")
-    stem_manager.process_all_songs(songs)
+    # Initialize stem manager and generate stems (only if use_stems=True)
+    if use_stems:
+        stem_manager = get_auto_stem_manager(str(folder_path))
+        
+        print("\n🎵 Generating stems (this may take a few minutes)...")
+        stem_manager.process_all_songs(songs)
+    else:
+        stem_manager = None
+        print("\n🎵 Skipping stem generation (--no-stems mode)")
     
     print("\n🎵 Loading songs...")
     for i, song_path in enumerate(songs):
@@ -364,24 +390,25 @@ def load_music_folder(folder_path):
                         print(f"    \u26a0\ufe0f  Beat grid analysis failed for track {ti}: {e}")
                 threading.Thread(target=_analyze_grid, daemon=True).start()
             
-            # Load stems if available
-            song_stem = Path(song_path).stem
-            stem_files = {
-                'vocals':       folder_path / f"{song_stem}_vocals.mp3",
-                'instrumental': folder_path / f"{song_stem}_instrumental.mp3",
-                'drums':        folder_path / f"{song_stem}_drums.mp3",
-                'bass':         folder_path / f"{song_stem}_bass.mp3",
-                'other':        folder_path / f"{song_stem}_other.mp3"
-            }
-            
-            stems_found = 0
-            for stem_type, stem_path in stem_files.items():
-                if stem_path.exists():
-                    track_states[i].load_stem(stem_type, str(stem_path), TARGET_SAMPLE_RATE, TARGET_CHANNELS)
-                    stems_found += 1
+            # Load stems if available (only if use_stems=True)
+            if use_stems:
+                song_stem = Path(song_path).stem
+                stem_files = {
+                    'vocals':       folder_path / f"{song_stem}_vocals.mp3",
+                    'instrumental': folder_path / f"{song_stem}_instrumental.mp3",
+                    'drums':        folder_path / f"{song_stem}_drums.mp3",
+                    'bass':         folder_path / f"{song_stem}_bass.mp3",
+                    'other':        folder_path / f"{song_stem}_other.mp3"
+                }
+                
+                stems_found = 0
+                for stem_type, stem_path in stem_files.items():
+                    if stem_path.exists():
+                        track_states[i].load_stem(stem_type, str(stem_path), TARGET_SAMPLE_RATE, TARGET_CHANNELS)
+                        stems_found += 1
 
-            if stems_found == 0:
-                print(f"    ℹ️  No stem files found for {os.path.basename(song_path)}")
+                if stems_found == 0:
+                    print(f"    ℹ️  No stem files found for {os.path.basename(song_path)}")
                     
         except Exception as e:
             print(f"Error loading {song_path}: {e}")
@@ -509,6 +536,13 @@ def stop(index):
                     if s.is_playing:
                         active_track = i
                         break
+
+def return_to_start(index):
+    state = track_states.get(index)
+    if state:
+        with mixer.lock:
+            state.position = 0.0
+            state.playback_position = 0
 
 def start_cue(index):
     """Presionar CUE (flanco de subida): salta al cue_point y empieza a reproducir.
@@ -665,3 +699,135 @@ def get_bpm(index):
     if beat_matcher is None or index < 0 or index >= len(songs):
         return 0.0
     return beat_matcher.get_bpm(index)
+
+# -----------------------------
+# Beat Sync Functions (all songs 85 BPM)
+# -----------------------------
+def enable_sync(deck):
+    """Enable sync for the specified deck (0=left, 1=right)"""
+    global left_sync_enabled, right_sync_enabled, sync_master
+    if deck == 0:
+        left_sync_enabled = True
+    else:
+        right_sync_enabled = True
+    _update_sync_master()
+
+def disable_sync(deck):
+    """Disable sync for the specified deck (0=left, 1=right)"""
+    global left_sync_enabled, right_sync_enabled, sync_master
+    if deck == 0:
+        left_sync_enabled = False
+    else:
+        right_sync_enabled = False
+    if sync_master == deck:
+        sync_master = None
+        _update_sync_master()
+
+def is_sync_enabled(deck):
+    """Check if sync is enabled for deck (0=left, 1=right)"""
+    if deck == 0:
+        return left_sync_enabled
+    return right_sync_enabled
+
+def get_sync_master():
+    """Return which deck is the master (0=left, 1=right, None=none)"""
+    return sync_master
+
+def _update_sync_master():
+    """Update which deck is the master based on who is playing"""
+    global sync_master
+    left_playing = left_song_index >= 0 and track_states.get(left_song_index) and track_states[left_song_index].is_playing
+    right_playing = right_song_index >= 0 and track_states.get(right_song_index) and track_states[right_song_index].is_playing
+    
+    if left_playing and right_playing:
+        if sync_master is None:
+            sync_master = 0  # Left deck is master by default
+    elif left_playing:
+        sync_master = 0
+    elif right_playing:
+        sync_master = 1
+    else:
+        sync_master = None
+
+def sync_to_beat(target_deck, source_position):
+    """
+    Jump target deck's position to align with source deck's beat.
+    Both decks are 85 BPM so it's just phase alignment.
+    """
+    global track_states
+    
+    target_state = track_states.get(target_deck)
+    if target_state is None:
+        return
+    
+    current_pos = target_state.position
+    master_phase = source_position % BEAT_PERIOD
+    
+    # Find nearest beat that aligns with master's phase
+    beat_idx = int(current_pos / BEAT_PERIOD)
+    
+    candidates = [
+        beat_idx * BEAT_PERIOD,
+        (beat_idx + 1) * BEAT_PERIOD,
+        (beat_idx - 1) * BEAT_PERIOD,
+    ]
+    
+    best = min(candidates, key=lambda b: abs((b % BEAT_PERIOD) - master_phase))
+    
+    if abs(current_pos - best) > 0.03:
+        target_state.position = best
+        target_state.playback_position = int(best * target_state.sample_rate)
+
+def sync_align_positions():
+    """
+    Called every frame to keep syncing deck in phase with master.
+    Applies micro-adjustments to stay aligned.
+    """
+    global sync_master, left_sync_enabled, right_sync_enabled
+    
+    if sync_master is None:
+        return
+    
+    _update_sync_master()
+    if sync_master is None:
+        return
+    
+    master_deck = sync_master
+    slave_deck = 1 if master_deck == 0 else 0
+    
+    # Check if slave has sync enabled
+    if (master_deck == 0 and not left_sync_enabled) or (master_deck == 1 and not right_sync_enabled):
+        return
+    
+    master_state = track_states.get(master_deck)
+    slave_state = track_states.get(slave_deck)
+    
+    if master_state is None or slave_state is None:
+        return
+    if not master_state.is_playing or not slave_state.is_playing:
+        return
+    
+    master_pos = master_state.position
+    slave_pos = slave_state.position
+    
+    # Calculate phase difference
+    master_beat_phase = master_pos % BEAT_PERIOD
+    slave_beat_phase = slave_pos % BEAT_PERIOD
+    
+    # If slave is more than 0.1 beat ahead/behind, jump to nearest beat
+    threshold = BEAT_PERIOD * 0.35
+    
+    if abs(slave_beat_phase - master_beat_phase) > threshold:
+        # Jump slave to align with master
+        beat_idx = int(slave_pos / BEAT_PERIOD)
+        target_beats = [
+            beat_idx * BEAT_PERIOD,
+            (beat_idx + 1) * BEAT_PERIOD,
+            (beat_idx - 1) * BEAT_PERIOD
+        ]
+        
+        best = min(target_beats, key=lambda b: abs((b % BEAT_PERIOD) - master_beat_phase))
+        
+        if abs(slave_pos - best) > 0.02:
+            slave_state.position = best
+            slave_state.playback_position = int(best * slave_state.sample_rate)

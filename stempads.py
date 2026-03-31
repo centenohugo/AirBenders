@@ -17,6 +17,10 @@ class StemPad:
         self.is_enabled = False
         self.was_pinching = False
         
+        # Debounce
+        self.last_press_time = 0
+        self.debounce_delay = 0.6
+        
         # Colors
         self.color_inactive = (60, 60, 60)
         self.color_active = (0, 200, 0)  # Green when active
@@ -36,15 +40,24 @@ class StemPad:
         x1, y1, x2, y2 = self.get_bounds()
         return x1 <= x <= x2 and y1 <= y <= y2
     
-    def update(self, pinch_positions, is_enabled):
+    def update(self, pinch_positions, is_enabled, current_time=None):
         """
         Update button state.
-        Returns True on a new pinch (edge trigger only).
+        Returns True on a new pinch (edge trigger only), with debounce.
         """
         self.is_enabled = is_enabled
         
         is_pinching_now = any(self.contains(px, py) for px, py in pinch_positions)
-        newly_pinched = is_pinching_now and not self.was_pinching
+        newly_pinched = False
+        
+        if is_pinching_now and not self.was_pinching:
+            if current_time is not None and current_time - self.last_press_time < self.debounce_delay:
+                newly_pinched = False
+            else:
+                newly_pinched = True
+                if current_time is not None:
+                    self.last_press_time = current_time
+        
         self.was_pinching = is_pinching_now
         
         return newly_pinched
@@ -86,7 +99,7 @@ class StemPadBank:
         self.current_stems = []
         
         # Solo vocals
-        self.stem_labels = {'vocals': 'VOX'}
+        self.stem_labels = {'vocals': 'Vocals'}
     
     def _create_pads(self, available_stems):
         """Create pads based on available stems (vocals only)"""
@@ -118,13 +131,14 @@ class StemPadBank:
         
         self.current_stems = sorted_stems
     
-    def update(self, pinch_positions, stem_states):
+    def update(self, pinch_positions, stem_states, current_time=None):
         """
         Update all pads in the bank.
 
         Args:
             pinch_positions: List of (x, y) pinch positions
             stem_states: Dict of {stem_type: enabled} from music module
+            current_time: Current time for debounce (optional)
 
         Returns:
             List of stem_types that were newly pinched this frame
@@ -136,23 +150,12 @@ class StemPadBank:
         events = []
         for pad in self.pads:
             is_enabled = stem_states.get(pad.stem_type, False)
-            if pad.update(pinch_positions, is_enabled):
+            if pad.update(pinch_positions, is_enabled, current_time):
                 events.append(pad.stem_type)
         
         return events
     
     def draw(self, frame):
         """Draw all pads in the bank"""
-        if not self.pads:
-            cv.putText(frame, f"{self.deck_label}: No stems",
-                       (self.x - 55, self.y),
-                       cv.FONT_HERSHEY_SIMPLEX, 0.4, (150, 150, 150), 1)
-            return
-        
-        # Label above pads (centered on bank position)
-        cv.putText(frame, f"{self.deck_label} STEMS",
-                   (self.x - 50, self.y - 28),
-                   cv.FONT_HERSHEY_SIMPLEX, 0.4, (200, 200, 200), 1)
-        
         for pad in self.pads:
             pad.draw(frame)

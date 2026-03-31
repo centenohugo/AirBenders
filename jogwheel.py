@@ -12,9 +12,23 @@ class JogWheel:
         self.was_pinching = False
         self.last_time = time.time()
         self.on_release_callback = None
+        self.center_button_radius = 35
+        self.last_press_time = 0
+        self.debounce_delay = 0.4
 
     def contains(self, x, y):
         return math.hypot(x - self.cx, y - self.cy) <= self.radius
+
+    def contains_center_button(self, x, y):
+        return math.hypot(x - self.cx, y - self.cy) <= self.center_button_radius
+
+    def check_center_press(self, pinch_positions, current_time):
+        for px, py in pinch_positions:
+            if self.contains_center_button(px, py):
+                if current_time - self.last_press_time > self.debounce_delay:
+                    self.last_press_time = current_time
+                    return True
+        return False
 
     def _angle_from_center(self, x, y):
         return math.atan2(y - self.cy, x - self.cx)
@@ -52,6 +66,10 @@ class JogWheel:
 
     def draw(self, frame):
         cv2.circle(frame, (self.cx, self.cy), self.radius, (60, 60, 60), 2)
+        
+        cv2.circle(frame, (self.cx, self.cy), self.center_button_radius, (80, 80, 80), -1)
+        cv2.circle(frame, (self.cx, self.cy), self.center_button_radius, (0, 200, 255), 2)
+        
         x2 = int(self.cx + math.cos(self.angle) * self.radius)
         y2 = int(self.cy + math.sin(self.angle) * self.radius)
         cv2.line(frame, (self.cx, self.cy), (x2, y2), (0, 0, 255), 4)
