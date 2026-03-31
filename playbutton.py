@@ -25,13 +25,23 @@ class PlayButton:
         cv.circle(frame, (x, y), self.radius, color, -1)
         cv.circle(frame, (x, y), self.radius, (0, 0, 0), 3)
 
-        # Draw play triangle (black)
-        triangle = np.array([
-            [x - 8, y - 15],
-            [x - 8, y + 15],
-            [x + 18, y]
-        ], dtype=np.int32)
-        cv.fillPoly(frame, [triangle], (0, 0, 0))
+        if state == "playing":
+            # Draw pause icon: two vertical bars
+            bar_w = 6
+            bar_h = 18
+            gap = 5
+            cv.rectangle(frame, (x - gap - bar_w, y - bar_h // 2),
+                         (x - gap, y + bar_h // 2), (0, 0, 0), -1)
+            cv.rectangle(frame, (x + gap, y - bar_h // 2),
+                         (x + gap + bar_w, y + bar_h // 2), (0, 0, 0), -1)
+        else:
+            # Draw play triangle (black)
+            triangle = np.array([
+                [x - 8, y - 15],
+                [x - 8, y + 15],
+                [x + 18, y]
+            ], dtype=np.int32)
+            cv.fillPoly(frame, [triangle], (0, 0, 0))
 
         # Label below button
         cv.putText(frame, self.label, (x - 30, y + self.radius + 25),
