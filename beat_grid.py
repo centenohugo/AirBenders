@@ -138,12 +138,21 @@ class BeatGridManager:
 
     # ── per-frame drawing ─────────────────────────────────────────────────────
 
+    OTHER_WAVEFORM_COLOR = (0, 120, 255)   # orange — other deck waveform
+    OTHER_BEAT_COLOR     = (0, 50,  220)   # red    — other deck beat markers
+
     def draw_strip(self, frame, track_index, position_sec,
-                   cx, y, is_playing):
+                   cx, y, is_playing,
+                   other_track_index=None, other_position_sec=None):
         """
         Draw a waveform strip with beat markers centred at (cx, y).
         cx   = horizontal centre (align with jog wheel centre)
         y    = top of the strip
+
+        If other_track_index and other_position_sec are provided, the other
+        deck's waveform and beat markers are drawn overlaid in orange/red —
+        exactly like the CDJ-3000 Stacked Waveform feature.  When both
+        waveforms align at the playhead, the beats are in sync.
         """
         grid = self.grids.get(track_index)
         if grid is None or not grid.ready or grid.waveform is None:
@@ -174,9 +183,44 @@ class BeatGridManager:
         cv.rectangle(frame, (x1, y), (x2, y + self.STRIP_H),
                      (70, 70, 70), 1)
 
-        # ── waveform bars ─────────────────────────────────────────────────────
-        # Map each pixel column to a time, then index into waveform array
         mid_y = y + self.STRIP_H // 2
+
+        # ── other deck waveform (drawn first, behind the main waveform) ───────
+        other_grid = self.grids.get(other_track_index) if other_track_index is not None else None
+        if (other_grid is not None and other_grid.ready
+                and other_grid.waveform is not None
+                and other_position_sec is not None):
+            other_wf    = other_grid.waveform
+            other_ds    = max(1, int(other_grid.sample_rate * 0.005))
+            other_wf_sr = other_grid.sample_rate / other_ds
+            for px in range(self.STRIP_W):
+                t  = other_position_sec + (px / self.STRIP_W - 0.5) * self.WINDOW_SEC
+                wi = int(t * other_wf_sr)
+                if 0 <= wi < len(other_wf):
+                    amp   = other_wf[wi]
+                    bar_h = max(1, int(amp * (self.STRIP_H // 2 - 2)))
+                    cv.line(frame,
+                            (x1 + px, mid_y - bar_h),
+                            (x1 + px, mid_y + bar_h),
+                            self.OTHER_WAVEFORM_COLOR, 1)
+
+            # other deck beat markers in red
+            o_start = other_position_sec - half_w_sec
+            o_end   = other_position_sec + half_w_sec
+            for bt in other_grid.beat_times:
+                if o_start <= bt <= o_end:
+                    rel  = (bt - o_start) / self.WINDOW_SEC
+                    bx   = x1 + int(rel * self.STRIP_W)
+                    bidx = other_grid.beat_times.index(bt)
+                    is_bar   = (bidx % 4 == 0)
+                    tick_h   = self.STRIP_H if is_bar else self.STRIP_H // 2
+                    tick_y   = y if is_bar else y + self.STRIP_H // 4
+                    thickness = 2 if is_bar else 1
+                    cv.line(frame, (bx, tick_y), (bx, tick_y + tick_h),
+                            self.OTHER_BEAT_COLOR, thickness)
+
+        # ── main waveform bars ────────────────────────────────────────────────
+        # Map each pixel column to a time, then index into waveform array
         for px in range(self.STRIP_W):
             t = position_sec + (px / self.STRIP_W - 0.5) * self.WINDOW_SEC
             wi = int(t * wf_sr)
@@ -192,7 +236,7 @@ class BeatGridManager:
                         (screen_x, mid_y + bar_h),
                         c, 1)
 
-        # ── beat markers ──────────────────────────────────────────────────────
+        # ── main deck beat markers ────────────────────────────────────────────
         t_start = position_sec - half_w_sec
         t_end   = position_sec + half_w_sec
         for bt in grid.beat_times:
