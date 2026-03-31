@@ -12,9 +12,10 @@ import music as mc
 import time
 import songlist
 from load import LoadButton
-from volumeSlider import VolumeSlider, clamp, is_claw
+from volumeSlider import VolumeSlider
 from stempads import StemPadBank
 from recorder import DJRecorder, RecordButton
+from cuebutton import CueButton
 from bpm_display_only import BeatMatcher, BPMDisplay
 from beat_grid import BeatGridManager
 
@@ -112,13 +113,15 @@ class ReleaseCallback:
 cam = cv.VideoCapture(0)
 frame_idx = 0
 left_button = right_button = left_load_button = right_load_button = None
+left_cue_button = right_cue_button = None
+left_cue_held = False
+right_cue_held = False
 left_jog = right_jog = None
 left_volume = right_volume = None
 left_stem_bank = right_stem_bank = None
 record_button = None
 left_bpm_display = right_bpm_display = None
 beat_grid_manager_ui = None  # alias for drawing
-# visualizer = None
 pinching_previous = set()
 
 # -----------------------------
@@ -153,6 +156,8 @@ while cam.isOpened():
         right_button = PlayButton(center=(center_x+200, button_y), radius=30, label="PLAY 2")
         left_load_button = LoadButton(center=(center_x-200, button_y-70), radius=25, label="LOAD")
         right_load_button = LoadButton(center=(center_x+200, button_y-70), radius=25, label="LOAD")
+        left_cue_button = CueButton(center=(center_x-130, button_y), radius=25, label="CUE")
+        right_cue_button = CueButton(center=(center_x+130, button_y), radius=25, label="CUE")
         
         # Record button - top center
         record_button = RecordButton(center=(center_x, 60), radius=35)
@@ -171,21 +176,19 @@ while cam.isOpened():
         left_volume = VolumeSlider(x=left_jog.cx - slider_offset - slider_width, y=left_jog.cy - slider_height//2, width=slider_width, height=slider_height, track_index=0)
         right_volume = VolumeSlider(x=right_jog.cx + slider_offset, y=right_jog.cy - slider_height//2, width=slider_width, height=slider_height, track_index=1)
 
-        # Initialize stem pad banks (below play button)
-        stem_pad_y = button_y + 50
+        # Stem pad banks — own row below play/cue, in the center gap
+        stem_pad_y = button_y + 65
         left_stem_bank = StemPadBank(
-            position=(center_x - 200, stem_pad_y),
+            position=(center_x - 55, stem_pad_y),
             track_index=0,
-            deck_label="LEFT"
+            deck_label="L"
         )
         right_stem_bank = StemPadBank(
-            position=(center_x + 200, stem_pad_y),
+            position=(center_x + 55, stem_pad_y),
             track_index=1,
-            deck_label="RIGHT"
+            deck_label="R"
         )
 
-    # if visualizer is None:
-    #     visualizer = DJVisualizer(w, h)
 
     # -----------------------------
     # Hand Detection
@@ -263,48 +266,72 @@ while cam.isOpened():
     left_active = left_song_index>=0 and any(left_button.contains(x,y) for x,y in pinch_positions)
     right_active = right_song_index>=0 and any(right_button.contains(x,y) for x,y in pinch_positions)
     
-    if left_active and left_button.center not in pinching_previous: 
+    if left_active and left_button.center not in pinching_previous:
         mc.toggle_play(left_song_index)
-    
-    if right_active and right_button.center not in pinching_previous: 
+
+    if right_active and right_button.center not in pinching_previous:
         mc.toggle_play(right_song_index)
-    
+
     pinching_previous = set()
     if left_active: pinching_previous.add(left_button.center)
     if right_active: pinching_previous.add(right_button.center)
 
     # -----------------------------
+    # CUE Buttons (hold = preview, release = volver al cue y parar)
+    # -----------------------------
+    left_cue_active = left_song_index >= 0 and any(left_cue_button.contains(x, y) for x, y in pinch_positions)
+    right_cue_active = right_song_index >= 0 and any(right_cue_button.contains(x, y) for x, y in pinch_positions)
+
+    if left_cue_active and not left_cue_held:
+        mc.start_cue(left_song_index)
+    elif not left_cue_active and left_cue_held:
+        mc.release_cue(left_song_index)
+
+    if right_cue_active and not right_cue_held:
+        mc.start_cue(right_song_index)
+    elif not right_cue_active and right_cue_held:
+        mc.release_cue(right_song_index)
+
+    left_cue_held = left_cue_active
+    right_cue_held = right_cue_active
+
+    left_cue_pt = mc.get_cue_point(left_song_index) if left_song_index >= 0 else None
+    right_cue_pt = mc.get_cue_point(right_song_index) if right_song_index >= 0 else None
+
+    left_cue_state = "active" if left_cue_active else ("cue_set" if left_cue_pt is not None else "no_cue")
+    right_cue_state = "active" if right_cue_active else ("cue_set" if right_cue_pt is not None else "no_cue")
+
+    left_cue_button.draw(frame, state=left_cue_state)
+    right_cue_button.draw(frame, state=right_cue_state)
+
+    # -----------------------------
     # Stem Pads Control
     # -----------------------------
-    if left_song_index >= 0:
-        if mc.has_stems(left_song_index):
-            left_stem_states = {
-                stem: mc.get_stem_state(left_song_index, stem)
-                for stem in mc.get_available_stems(left_song_index)
-            }
-            pinched_stems = left_stem_bank.update(pinch_positions, left_stem_states)
-            for stem_type in pinched_stems:
-                mc.toggle_stem(left_song_index, stem_type)
-        else:
-            empty_stem_states = {'drums': False, 'vocals': False, 'instrumental': False}
-            left_stem_bank.update([], empty_stem_states)
-        
-        left_stem_bank.draw(frame)
-    
-    if right_song_index >= 0:
-        if mc.has_stems(right_song_index):
-            right_stem_states = {
-                stem: mc.get_stem_state(right_song_index, stem)
-                for stem in mc.get_available_stems(right_song_index)
-            }
-            pinched_stems = right_stem_bank.update(pinch_positions, right_stem_states)
-            for stem_type in pinched_stems:
-                mc.toggle_stem(right_song_index, stem_type)
-        else:
-            empty_stem_states = {'drums': False, 'vocals': False, 'instrumental': False}
-            right_stem_bank.update([], empty_stem_states)
-        
-        right_stem_bank.draw(frame)
+    # Left deck
+    if left_song_index >= 0 and mc.has_stems(left_song_index):
+        left_stem_states = {
+            stem: mc.get_stem_state(left_song_index, stem)
+            for stem in mc.get_available_stems(left_song_index)
+        }
+        pinched_stems = left_stem_bank.update(pinch_positions, left_stem_states)
+        for stem_type in pinched_stems:
+            mc.toggle_stem(left_song_index, stem_type)
+    else:
+        left_stem_bank.update([], {'vocals': False})
+    left_stem_bank.draw(frame)
+
+    # Right deck
+    if right_song_index >= 0 and mc.has_stems(right_song_index):
+        right_stem_states = {
+            stem: mc.get_stem_state(right_song_index, stem)
+            for stem in mc.get_available_stems(right_song_index)
+        }
+        pinched_stems = right_stem_bank.update(pinch_positions, right_stem_states)
+        for stem_type in pinched_stems:
+            mc.toggle_stem(right_song_index, stem_type)
+    else:
+        right_stem_bank.update([], {'vocals': False})
+    right_stem_bank.draw(frame)
 
     # -----------------------------
     # Jog Wheels
@@ -329,19 +356,14 @@ while cam.isOpened():
     right_jog.draw(frame)
 
     # -----------------------------
-    # Volume Sliders (flipped hands)
+    # Volume Sliders (grab & drag)
     # -----------------------------
-    if detection_result.hand_landmarks and detection_result.handedness:
-        for hand_info, hand_landmarks in zip(detection_result.handedness, detection_result.hand_landmarks):
-            label = hand_info[0].category_name
-            if label == "Left":
-                right_volume.update(hand_landmarks, w, h)
-                if right_song_index >= 0:
-                    mc.set_volume(right_song_index, right_volume.volume)
-            elif label == "Right":
-                left_volume.update(hand_landmarks, w, h)
-                if left_song_index >= 0:
-                    mc.set_volume(left_song_index, left_volume.volume)
+    left_volume.update(pinch_positions)
+    right_volume.update(pinch_positions)
+    if left_song_index >= 0:
+        mc.set_volume(left_song_index, left_volume.volume)
+    if right_song_index >= 0:
+        mc.set_volume(right_song_index, right_volume.volume)
 
     left_volume.draw(frame)
     right_volume.draw(frame)
@@ -379,14 +401,18 @@ while cam.isOpened():
             frame, left_song_index,
             mc.get_position(left_song_index),
             cx=left_jog.cx, y=strip_y,
-            is_playing=mc.is_playing(left_song_index)
+            is_playing=mc.is_playing(left_song_index),
+            other_track_index=right_song_index if right_song_index >= 0 else None,
+            other_position_sec=mc.get_position(right_song_index) if right_song_index >= 0 else None
         )
     if right_song_index >= 0:
         beat_grid_manager.draw_strip(
             frame, right_song_index,
             mc.get_position(right_song_index),
             cx=right_jog.cx, y=strip_y,
-            is_playing=mc.is_playing(right_song_index)
+            is_playing=mc.is_playing(right_song_index),
+            other_track_index=left_song_index if left_song_index >= 0 else None,
+            other_position_sec=mc.get_position(left_song_index) if left_song_index >= 0 else None
         )
     if left_song_index >= 0 and right_song_index >= 0:
         ring_cx = w // 2
@@ -425,9 +451,6 @@ while cam.isOpened():
     # -----------------------------
     # Visualizer (commented out)
     # -----------------------------
-    # left_playing = left_song_index>=0 and mc.is_playing(left_song_index)
-    # right_playing = right_song_index>=0 and mc.is_playing(right_song_index)
-    # visualizer.draw_all(frame, left_playing, right_playing, left_song_index, right_song_index)
 
     # -----------------------------
     # Recording Controls
