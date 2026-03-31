@@ -145,13 +145,13 @@ class StemPadBank:
         """Draw all pads in the bank"""
         if not self.pads:
             cv.putText(frame, f"{self.deck_label}: No stems",
-                       (self.x - 60, self.y),
+                       (self.x - 55, self.y),
                        cv.FONT_HERSHEY_SIMPLEX, 0.4, (150, 150, 150), 1)
             return
         
-        # Label above pads
+        # Label above pads (centered on bank position)
         cv.putText(frame, f"{self.deck_label} STEMS",
-                   (self.x - 50, self.y - 22),
+                   (self.x - 50, self.y - 28),
                    cv.FONT_HERSHEY_SIMPLEX, 0.4, (200, 200, 200), 1)
         
         for pad in self.pads:

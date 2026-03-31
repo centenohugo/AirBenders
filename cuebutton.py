@@ -12,16 +12,16 @@ class CueButton:
     def draw(self, frame, state="no_cue"):
         x, y = self.center
         if state == "active":
-            color = (0, 255, 0)      # verde — pinch activo
+            color = (0, 255, 0)      # green — active pinch
         elif state == "cue_set":
-            color = (0, 200, 255)    # amarillo-naranja — cue establecido
+            color = (0, 200, 255)    # yellow-orange — cue set
         else:
-            color = (80, 80, 80)     # gris oscuro — sin cue
+            color = (80, 80, 80)     # dark gray — no cue
 
         cv.circle(frame, (x, y), self.radius, color, -1)
         cv.circle(frame, (x, y), self.radius, (0, 0, 0), 2)
 
-        # Símbolo CUE: línea vertical + triángulo apuntando a ella
+        # Cue symbol: vertical line + triangle pointing to it
         bar_x = x - self.radius // 3
         bar_h = self.radius // 2
         cv.rectangle(frame, (bar_x - 2, y - bar_h), (bar_x + 2, y + bar_h), (0, 0, 0), -1)

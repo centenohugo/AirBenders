@@ -72,11 +72,11 @@ class VolumeSlider:
         self.volume += (self._target_volume - self.volume) * SMOOTH
 
     def draw(self, frame):
-        # Pista
+        # Track
         cv.rectangle(frame, (self.x, self.y), (self.x+self.w, self.y+self.h), (50,50,50), -1)
         cv.rectangle(frame, (self.x, self.y), (self.x+self.w, self.y+self.h), (180,180,180), 2)
 
-        # Relleno debajo del handle
+        # Fill below handle
         hy = self._handle_y()
         mid_y = hy + self.HANDLE_H // 2
         if mid_y < self.y + self.h:
