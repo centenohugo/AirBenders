@@ -63,3 +63,26 @@ class JogWheel:
                         0.6,
                         (200, 200, 200),
                         2)
+
+    def draw_song_name(self, frame, song_name, color, max_chars=25):
+        """Draw song name above the jog wheel with a styled background"""
+        if song_name is None:
+            return
+        
+        if len(song_name) > max_chars:
+            song_name = song_name[:max_chars - 3] + "..."
+        
+        text_size, _ = cv2.getTextSize(song_name, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 2)
+        text_w, text_h = text_size
+        
+        box_x1 = self.cx - text_w // 2 - 15
+        box_y1 = self.cy - self.radius - text_h - 20
+        box_x2 = self.cx + text_w // 2 + 15
+        box_y2 = self.cy - self.radius - 5
+        
+        cv2.rectangle(frame, (box_x1, box_y1), (box_x2, box_y2), (30, 30, 30), cv2.FILLED)
+        cv2.rectangle(frame, (box_x1, box_y1), (box_x2, box_y2), color, 2)
+        
+        cv2.putText(frame, song_name, 
+                    (self.cx - text_w // 2, box_y2 - 8),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.55, color, 2)

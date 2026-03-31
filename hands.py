@@ -11,7 +11,7 @@ from jogwheel import JogWheel
 import music as mc
 import time
 import songlist
-from load import LoadButton
+
 from volumeSlider import VolumeSlider
 from stempads import StemPadBank
 from recorder import DJRecorder, RecordButton
@@ -83,36 +83,96 @@ highlighted_index = None
 song_pinch_id = None
 
 # -----------------------------
-# Pinch Detection (for play & load only)
+# Pinch Detection (robust with hysteresis, smoothing, validation)
 # -----------------------------
-def is_pinching(hand_landmarks, w, h, threshold=40):
-    thumb_tip = hand_landmarks[4]
-    index_tip = hand_landmarks[8]
-    tx, ty = int(thumb_tip.x * w), int(thumb_tip.y * h)
-    ix, iy = int(index_tip.x * w), int(index_tip.y * h)
-    return math.hypot(tx - ix, ty - iy) < threshold
+class PinchDetector:
+    ENGAGE_THRESHOLD  = 0.055
+    RELEASE_THRESHOLD = 0.080
+    PINCH_CONFIRM     = 3
+    RELEASE_CONFIRM   = 5
+
+    def __init__(self):
+        self.is_pinching = False
+        self.pinch_frames = 0
+        self.release_frames = 0
+        self.confidence = 0.0
+
+    def update(self, hand_landmarks):
+        thumb = hand_landmarks[4]
+        index = hand_landmarks[8]
+        dist = math.sqrt((thumb.x - index.x)**2 + (thumb.y - index.y)**2)
+
+        self.confidence = max(0.0, 1.0 - (dist / self.ENGAGE_THRESHOLD))
+
+        if not self._validate_fingers(hand_landmarks):
+            self.release_frames += 1
+            self.pinch_frames = 0
+            if self.release_frames >= self.RELEASE_CONFIRM:
+                self.is_pinching = False
+            return False, 0.0
+
+        if dist < self.ENGAGE_THRESHOLD:
+            self.pinch_frames += 1
+            self.release_frames = 0
+            if self.pinch_frames >= self.PINCH_CONFIRM:
+                self.is_pinching = True
+        elif dist > self.RELEASE_THRESHOLD:
+            self.release_frames += 1
+            self.pinch_frames = 0
+            if self.release_frames >= self.RELEASE_CONFIRM:
+                self.is_pinching = False
+
+        return self.is_pinching, self.confidence
+
+    def _validate_fingers(self, landmarks):
+        wrist = landmarks[0]
+        checks = [(12, 9), (16, 13), (20, 17)]
+        for tip_idx, mcp_idx in checks:
+            tip = landmarks[tip_idx]
+            mcp = landmarks[mcp_idx]
+            tip_dist = math.sqrt((tip.x - wrist.x)**2 + (tip.y - wrist.y)**2)
+            mcp_dist = math.sqrt((mcp.x - wrist.x)**2 + (mcp.y - wrist.y)**2)
+            if tip_dist > mcp_dist * 1.05:
+                return False
+        return True
+
+    def reset(self):
+        self.is_pinching = False
+        self.pinch_frames = 0
+        self.release_frames = 0
+        self.confidence = 0.0
+
+
+def draw_pinch_indicator(frame, cx, cy, confidence, confirm_frames, max_confirm=PinchDetector.PINCH_CONFIRM):
+    base_radius = int(8 + confidence * 17)
+
+    if confirm_frames < max_confirm:
+        color = (0, 200, 255)
+    else:
+        color = (0, 255, 0)
+
+    if confirm_frames > 0:
+        ring_radius = base_radius + 8
+        confirm_progress = confirm_frames / max_confirm
+        end_angle = int(confirm_progress * 360)
+        cv.ellipse(frame, (cx, cy), (ring_radius, ring_radius), 0, -90, -90 + end_angle, color, 2)
+
+    cv.circle(frame, (cx, cy), base_radius, color, -1)
+    cv.circle(frame, (cx, cy), 3, (0, 0, 0), -1)
 
 def format_time(seconds):
     minutes = int(seconds // 60)
     secs = int(seconds % 60)
     return f"{minutes:02d}:{secs:02d}"
 
-class ScrubCallback:
-    def __init__(self, index): self.index = index
-    def __call__(self, delta):
-        if self.index >= 0: mc.scrub(delta, self.index)
 
-class ReleaseCallback:
-    def __init__(self, index): self.index = index
-    def __call__(self):
-        if self.index >= 0: mc.end_scrub(self.index)
 
 # -----------------------------
 # Camera & UI
 # -----------------------------
 cam = cv.VideoCapture(0)
 frame_idx = 0
-left_button = right_button = left_load_button = right_load_button = None
+left_button = right_button = None
 left_cue_button = right_cue_button = None
 left_cue_held = False
 right_cue_held = False
@@ -123,6 +183,8 @@ record_button = None
 left_bpm_display = right_bpm_display = None
 beat_grid_manager_ui = None  # alias for drawing
 pinching_previous = set()
+left_detector = PinchDetector()
+right_detector = PinchDetector()
 
 # -----------------------------
 # Main Loop
@@ -184,10 +246,6 @@ while cam.isOpened():
         left_cue_button = CueButton(center=(MARGIN_X + BUTTON_SPACING, BUTTON_Y), radius=25, label="CUE")
         right_cue_button = CueButton(center=(w - MARGIN_X - BUTTON_SPACING, BUTTON_Y), radius=25, label="CUE")
         
-        # Load buttons - inner position
-        left_load_button = LoadButton(center=(MARGIN_X, BUTTON_Y), radius=25, label="LOAD")
-        right_load_button = LoadButton(center=(w - MARGIN_X, BUTTON_Y), radius=25, label="LOAD")
-        
         # Jog wheels - center of each deck
         left_jog = JogWheel(center=(MARGIN_X + JOG_X_OFFSET, JOG_Y), radius=JOG_RADIUS)
         right_jog = JogWheel(center=(w - MARGIN_X - JOG_X_OFFSET, JOG_Y), radius=JOG_RADIUS)
@@ -234,15 +292,22 @@ while cam.isOpened():
     detection_result = landmarker.detect_for_video(mp_image, timestamp_ms)
 
     pinch_positions = []
+    pinch_confidences = []
+    pinch_confirm_frames = []
     if detection_result.hand_landmarks:
-        for hand_landmarks in detection_result.hand_landmarks:
-            if is_pinching(hand_landmarks, w, h):
+        for idx, hand_landmarks in enumerate(detection_result.hand_landmarks):
+            detector = left_detector if idx == 0 else right_detector
+            is_pinch, confidence = detector.update(hand_landmarks)
+
+            if is_pinch:
                 thumb_tip = hand_landmarks[4]
                 index_tip = hand_landmarks[8]
                 cx = int((thumb_tip.x + index_tip.x)/2 * w)
                 cy = int((thumb_tip.y + index_tip.y)/2 * h)
                 pinch_positions.append((cx, cy))
-                cv.circle(frame, (cx, cy), 10, (0,255,0), -1)
+                pinch_confidences.append(confidence)
+                pinch_confirm_frames.append(detector.pinch_frames)
+                draw_pinch_indicator(frame, cx, cy, confidence, detector.pinch_frames)
 
     # -----------------------------
     # Song List Update (dragging and collapse)
@@ -264,38 +329,33 @@ while cam.isOpened():
     song_list_panel.draw(frame, highlight_index=highlighted_index)
 
     # -----------------------------
-    # Load Buttons Logic
+    # Load Song to Deck via JogWheel
     # -----------------------------
-    left_load_active = right_load_active = False
     if not song_list_panel.is_collapsed and not song_list_panel.is_dragging:
         for px, py in pinch_positions:
             if highlighted_index is not None:
-                if left_load_button.contains(px, py):
+                if left_jog.contains(px, py):
                     if left_song_index >= 0:
                         mc.stop(left_song_index)
                     left_song_index = highlighted_index
                     beat_grid_manager.set_track_deck(left_song_index, 0)
                     mc.stop(left_song_index)
                     highlighted_index = None
-                    left_load_active = True
-                if right_load_button.contains(px, py):
+                if right_jog.contains(px, py):
                     if right_song_index >= 0:
                         mc.stop(right_song_index)
                     right_song_index = highlighted_index
                     beat_grid_manager.set_track_deck(right_song_index, 1)
                     mc.stop(right_song_index)
                     highlighted_index = None
-                    right_load_active = True
 
     # -----------------------------
-    # Play & Load Buttons
+    # Play Button State
     # -----------------------------
     left_state = "empty" if left_song_index<0 else "playing" if mc.is_playing(left_song_index) else "loaded"
     right_state = "empty" if right_song_index<0 else "playing" if mc.is_playing(right_song_index) else "loaded"
     left_button.draw(frame, state=left_state)
     right_button.draw(frame, state=right_state)
-    left_load_button.draw(frame, active=left_load_active)
-    right_load_button.draw(frame, active=right_load_active)
 
     # -----------------------------
     # Trigger Play if Pinched
@@ -373,24 +433,22 @@ while cam.isOpened():
     # -----------------------------
     # Jog Wheels
     # -----------------------------
-    left_pinching_jog = right_pinching_jog = False
-    for cx, cy in pinch_positions:
-        if left_song_index>=0 and left_jog.contains(cx, cy):
-            left_pinching_jog = True
-            left_jog.update(frame, cx, cy, True, ScrubCallback(left_song_index), ReleaseCallback(left_song_index))
-        if right_song_index>=0 and right_jog.contains(cx, cy):
-            right_pinching_jog = True
-            right_jog.update(frame, cx, cy, True, ScrubCallback(right_song_index), ReleaseCallback(right_song_index))
-    if not left_pinching_jog: left_jog.check_release()
-    if not right_pinching_jog: right_jog.check_release()
-
-    # Spin visuals
+    # Jog Wheels (visual only, no scratching)
+    # -----------------------------
     if left_song_index>=0 and mc.is_playing(left_song_index):
         left_jog.angle += 0.05
     if right_song_index>=0 and mc.is_playing(right_song_index):
         right_jog.angle += 0.05
     left_jog.draw(frame)
     right_jog.draw(frame)
+
+    # -----------------------------
+    # Song Names Above Jog Wheels
+    # -----------------------------
+    left_song_name = mc.get_current_song_name(left_song_index) if left_song_index >= 0 else None
+    right_song_name = mc.get_current_song_name(right_song_index) if right_song_index >= 0 else None
+    left_jog.draw_song_name(frame, left_song_name, (0, 255, 100))  # green for left
+    right_jog.draw_song_name(frame, right_song_name, (255, 150, 0))  # orange for right
 
     # -----------------------------
     # Volume Sliders (grab & drag)
@@ -462,16 +520,6 @@ while cam.isOpened():
             right_song_index, mc.get_position(right_song_index)
         )
 
-    # Display now playing for both decks
-    now_playing_text = []
-    if left_song_index >= 0 and mc.is_playing(left_song_index):
-        now_playing_text.append(f"LEFT: {mc.get_current_song_name(left_song_index)}")
-    if right_song_index >= 0 and mc.is_playing(right_song_index):
-        now_playing_text.append(f"RIGHT: {mc.get_current_song_name(right_song_index)}")
-    
-    if now_playing_text:
-        cv.putText(frame, " | ".join(now_playing_text), (10,210), cv.FONT_HERSHEY_SIMPLEX, 0.7, (0,255,0), 2)
-    
     # Show stem status if active
     stem_status_y = 240
     if left_song_index >= 0 and mc.has_stems(left_song_index):
