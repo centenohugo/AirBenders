@@ -1,5 +1,24 @@
 import os
 import sys
+
+if len(sys.argv) > 1 and sys.argv[1].lower() == '--extract-vocals':
+    from pathlib import Path
+    from auto_stems import AutoStemManager
+
+    music_folder = Path("MP3")
+    songs = [f for f in sorted(music_folder.glob("*.mp3"))
+             if not f.stem.endswith("_vocals")]
+
+    if not songs:
+        print("No se encontraron MP3 en la carpeta MP3/")
+        sys.exit(0)
+
+    print(f"Procesando {len(songs)} archivo(s)...")
+    manager = AutoStemManager(str(music_folder))
+    manager.process_all_songs(songs)
+    print("Separacion completa.")
+    sys.exit(0)
+
 import ctypes
 import cv2 as cv
 import mediapipe as mp
